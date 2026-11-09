@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 密钥与运行时数据（绝不提交）
+.env
+data/
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# PyInstaller
+*.spec.bak
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

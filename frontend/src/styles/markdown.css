@@ -1,0 +1,204 @@
+/* Claude 风格 Markdown 排版（深色青蓝主题） */
+.md-body {
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--text);
+  word-break: break-word;
+}
+.md-body > *:first-child {
+  margin-top: 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  color: var(--text-strong);
+  font-weight: 650;
+  line-height: 1.4;
+  margin: 1.1em 0 0.55em;
+}
+.md-body h1 {
+  font-size: 1.45em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--line);
+}
+.md-body h2 {
+  font-size: 1.28em;
+  padding-bottom: 0.28em;
+  border-bottom: 1px solid var(--line);
+}
+.md-body h3 {
+  font-size: 1.12em;
+}
+.md-body h4 {
+  font-size: 1em;
+}
+.md-body p {
+  margin: 0.7em 0;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.5em;
+}
+.md-body li {
+  margin: 0.3em 0;
+}
+.md-body li::marker {
+  color: var(--cyan);
+}
+.md-body strong {
+  color: var(--text-strong);
+  font-weight: 650;
+}
+.md-body em {
+  color: var(--cyan-soft);
+}
+.md-body blockquote {
+  margin: 0.8em 0;
+  padding: 0.4em 0 0.4em 1em;
+  border-left: 3px solid var(--cyan);
+  background: rgba(34, 211, 238, 0.06);
+  color: var(--muted);
+  border-radius: 0 6px 6px 0;
+}
+.md-body blockquote p {
+  margin: 0.2em 0;
+}
+.md-body a {
+  color: var(--cyan);
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(34, 211, 238, 0.5);
+}
+.md-body a:hover {
+  color: var(--cyan-soft);
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.2em 0;
+}
+
+/* 表格 */
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.9em 0;
+  font-size: 13.5px;
+  display: block;
+  overflow-x: auto;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line);
+  padding: 7px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+.md-body th {
+  background: rgba(34, 211, 238, 0.1);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.md-body tr:nth-child(even) td {
+  background: rgba(148, 163, 184, 0.04);
+}
+
+/* 行内代码 */
+.md-body code {
+  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  font-size: 0.88em;
+  background: rgba(34, 211, 238, 0.12);
+  color: #7dd3fc;
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+}
+
+/* 代码块 */
+.md-body pre {
+  position: relative;
+  margin: 0.9em 0;
+  padding: 14px 16px;
+  background: var(--code-bg) !important;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.md-body pre code {
+  display: block;
+  background: transparent;
+  color: #d8e4f0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre;
+}
+.md-body .code-head {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.md-body .code-lang {
+  font-size: 11px;
+  color: var(--muted-2);
+  margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.md-body .code-copy {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  transition: all 0.15s;
+}
+.md-body .code-copy:hover {
+  color: var(--cyan);
+  border-color: var(--line-strong);
+}
+.md-body .code-copy.done {
+  color: var(--ok);
+}
+
+/* hljs 配色微调 */
+.hljs-comment,
+.hljs-quote {
+  color: #5b7192;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in {
+  color: #22d3ee;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-attr {
+  color: #86efac;
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol {
+  color: #fbbf24;
+}
+.hljs-title,
+.hljs-name,
+.hljs-type,
+.hljs-function {
+  color: #7dd3fc;
+}
+.hljs-variable,
+.hljs-template-variable {
+  color: #f0abfc;
+}
+.hljs-params {
+  color: #d8e4f0;
+}
+.hljs-meta {
+  color: #94a3b8;
+}
