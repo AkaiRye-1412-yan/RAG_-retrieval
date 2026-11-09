@@ -33,7 +33,6 @@ async def config_status(request: Request) -> dict:
         "ark_configured": s.has_ark_key,
         "embedding_configured": bool(s.effective_embedding_key),
         "tavily_configured": s.has_tavily_key,
-        "tavily_enabled": s.tavily_enabled,
         "tavily_usable": s.tavily_usable,
         "ark_model": s.ark_model,
         "embedding_model": s.embedding_model,
@@ -89,7 +88,6 @@ def _updates_from_payload(payload: SettingsIn) -> dict[str, str]:
             updates[env] = str(data[f])
 
     bool_map = {
-        "tavily_enabled": "TAVILY_ENABLED",
         "ocr_enabled": "OCR_ENABLED",
     }
     for f, env in bool_map.items():

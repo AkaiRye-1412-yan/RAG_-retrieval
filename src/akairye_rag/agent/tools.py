@@ -37,6 +37,7 @@ def _tool_end(
     *,
     top_score: float | None = None,
     error: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ev: dict[str, Any] = {
         "type": "tool", "name": name, "status": "end",
@@ -46,6 +47,8 @@ def _tool_end(
         ev["top_score"] = top_score
     if error is not None:
         ev["error"] = error
+    if extra:
+        ev.update(extra)
     return ev
 
 
@@ -85,8 +88,18 @@ def _kb_items(ctx: "AppContext", hits: list[dict[str, Any]]) -> list[dict[str, A
     return items
 
 
-def make_agent_tools(ctx: "AppContext", s: "Settings", base_ref: int):
-    """按请求构建工具；编号在预检索片段之后顺延。"""
+def make_agent_tools(
+    ctx: "AppContext",
+    s: "Settings",
+    base_ref: int,
+    *,
+    doc_ids: tuple[str, ...] | None = None,
+):
+    """按请求构建工具；编号在预检索片段之后顺延。
+
+    doc_ids：产品分流锁定的文档范围，工具二次检索必须沿用，避免模型自己
+    绕回全库把其他产品的内容捞进来。
+    """
     counter = {"ref": base_ref}
 
     @tool
@@ -95,7 +108,7 @@ def make_agent_tools(ctx: "AppContext", s: "Settings", base_ref: int):
         writer = get_stream_writer()
         writer(_tool_start("knowledge_search", query))
         try:
-            hits = await ctx.kb_search(query, s)
+            hits = await ctx.kb_search(query, s, doc_ids=doc_ids)
         except Exception as e:
             logger.warning("知识库工具检索失败: %s", e)
             writer(_tool_error("knowledge_search", e))

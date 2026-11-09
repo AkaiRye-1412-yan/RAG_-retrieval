@@ -9,6 +9,8 @@ export const useAppStore = defineStore('app', {
   getters: {
     arkConfigured: (s) => !!s.status?.ark_configured,
     tavilyUsable: (s) => !!s.status?.tavily_usable,
+    // 联网是否真正生效：除 Key 之外，工具模式为 off 时 Tavily 不会被调用
+    tavilyEffective: (s) => !!s.status?.tavily_usable && s.status?.tool_mode !== 'off',
   },
   actions: {
     setView(v) {

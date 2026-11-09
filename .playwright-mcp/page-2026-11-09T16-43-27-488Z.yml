@@ -1,0 +1,176 @@
+- generic [ref=f2e3]:
+  - complementary [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]: A
+      - generic [ref=f2e7]:
+        - generic [ref=f2e8]: AkaiRye
+        - generic [ref=f2e9]: 知识RAG平台
+    - navigation [ref=f2e10]:
+      - button "检索聊天" [ref=f2e11] [cursor=pointer]
+      - button "向量库" [ref=f2e15] [cursor=pointer]
+      - button "系统配置" [active] [ref=f2e21] [cursor=pointer]
+    - generic [ref=f2e26]: AI 已配置
+  - generic [ref=f2e175]:
+    - generic [ref=f2e176]:
+      - heading "系统设置" [level=2] [ref=f2e177]
+      - generic [ref=f2e178]:
+        - text: 配置保存在程序目录的
+        - code [ref=f2e179]: .env
+        - text: 文件，修改后立即生效（数据目录变更需重启）
+    - generic [ref=f2e180]:
+      - generic [ref=f2e181]:
+        - generic [ref=f2e182]:
+          - generic [ref=f2e183]: AI 模型配置
+          - generic [ref=f2e188]: 已配置 ******************************************b011
+        - generic [ref=f2e190]:
+          - generic [ref=f2e191]: ARK_API_KEY
+          - generic [ref=f2e192]:
+            - textbox "ARK_API_KEY" [ref=f2e193]:
+              - /placeholder: 留空表示不修改；粘贴新的 Key 才会覆盖
+            - button [ref=f2e194] [cursor=pointer]
+        - generic [ref=f2e198]:
+          - generic [ref=f2e199]: ARK_BASE_URL
+          - textbox "ARK_BASE_URL" [ref=f2e200]: https://ark.cn-beijing.volces.com/api/plan/v3
+        - generic [ref=f2e201]:
+          - generic [ref=f2e202]: ARK_MODEL
+          - textbox "ARK_MODEL" [ref=f2e203]:
+            - /placeholder: 模型 ID 或 ep- 接入点 ID
+            - text: glm-5.3-flash
+        - generic [ref=f2e204]:
+          - generic [ref=f2e205]:
+            - generic [ref=f2e206]: temperature（0.7）
+            - slider "temperature（0.7）" [ref=f2e207]: "0.7"
+          - generic [ref=f2e208]:
+            - generic [ref=f2e209]: max_tokens
+            - generic [ref=f2e210]:
+              - button "max_tokens" [ref=f2e211] [cursor=pointer]
+              - spinbutton [ref=f2e213]: "4096"
+              - button [ref=f2e214] [cursor=pointer]
+        - generic [ref=f2e216]:
+          - generic [ref=f2e217]: 工具调用模式（总开关）
+          - generic [ref=f2e218]:
+            - button "auto（自动）" [ref=f2e219] [cursor=pointer]
+            - button "on（强制工具）" [ref=f2e220] [cursor=pointer]
+            - button "off（仅知识库）" [ref=f2e221] [cursor=pointer]
+          - paragraph [ref=f2e222]: 只依据本地知识库作答，不调用任何工具，也不会联网。
+          - paragraph [ref=f2e223]: 联网搜索由本模式控制：配置了下方 Tavily Key 后，auto/on 时模型才会按需联网。
+        - generic [ref=f2e224]:
+          - button "保存配置" [ref=f2e225] [cursor=pointer]
+          - button "测试连接" [ref=f2e230] [cursor=pointer]
+      - generic [ref=f2e237]:
+        - generic [ref=f2e238]:
+          - generic [ref=f2e239]: 向量模型配置
+          - generic [ref=f2e242]: 已配置 ******************************************b011
+        - generic [ref=f2e244]:
+          - generic [ref=f2e245]: EMBEDDING_MODEL
+          - textbox "EMBEDDING_MODEL" [ref=f2e246]: doubao-embedding-vision
+        - generic [ref=f2e247]:
+          - generic [ref=f2e248]: EMBEDDING_BASE_URL（留空回退 ARK_BASE_URL）
+          - textbox "EMBEDDING_BASE_URL（留空回退 ARK_BASE_URL）" [ref=f2e249]:
+            - /placeholder: 留空则使用 ARK_BASE_URL
+        - generic [ref=f2e250]:
+          - generic [ref=f2e251]: EMBEDDING_API_KEY（留空回退 ARK_API_KEY）
+          - generic [ref=f2e252]:
+            - textbox "EMBEDDING_API_KEY（留空回退 ARK_API_KEY）" [ref=f2e253]:
+              - /placeholder: 留空则使用 ARK_API_KEY
+            - button [ref=f2e254] [cursor=pointer]
+        - generic [ref=f2e258]:
+          - generic [ref=f2e259]:
+            - generic [ref=f2e260]: 向量维度 EMBEDDING_DIM
+            - spinbutton "向量维度 EMBEDDING_DIM 当前模型 doubao-embedding-vision 支持维度：2048" [ref=f2e261]: "2048"
+            - paragraph [ref=f2e262]: 当前模型 doubao-embedding-vision 支持维度：2048
+          - generic [ref=f2e263]:
+            - generic [ref=f2e264]: 嵌入批大小
+            - spinbutton "嵌入批大小" [ref=f2e265]: "10"
+        - paragraph [ref=f2e266]: 更换向量模型或维度后，需到「向量库」页执行重建索引，否则新文档会因维度不一致而入库失败。
+        - generic [ref=f2e267]:
+          - button "保存配置" [ref=f2e268] [cursor=pointer]
+          - button "测试嵌入" [ref=f2e273] [cursor=pointer]
+      - generic [ref=f2e280]:
+        - generic [ref=f2e281]:
+          - generic [ref=f2e282]: Tavily 联网搜索
+          - generic [ref=f2e287]: 工具模式 off，不会联网
+        - generic [ref=f2e289]:
+          - generic [ref=f2e290]: TAVILY_API_KEY
+          - generic [ref=f2e291]:
+            - textbox "TAVILY_API_KEY" [ref=f2e292]:
+              - /placeholder: 留空表示不修改；粘贴新的 Key 才会覆盖
+            - button [ref=f2e293] [cursor=pointer]
+        - paragraph [ref=f2e297]: 配置 Key 即启用，没有额外的开关。是否联网由上方「工具调用模式」决定： auto 未命中时才联网，on 强制先调用工具，off 永不联网。
+        - button "保存配置" [ref=f2e299] [cursor=pointer]
+      - generic [ref=f2e304]:
+        - generic [ref=f2e305]: 检索与切分参数
+        - generic [ref=f2e309]:
+          - generic [ref=f2e310]:
+            - generic [ref=f2e311]: 检索条数 TOP_K
+            - spinbutton "检索条数 TOP_K" [ref=f2e312]: "6"
+          - generic [ref=f2e313]:
+            - generic [ref=f2e314]: 相似度阈值（0~1）
+            - spinbutton "相似度阈值（0~1）" [ref=f2e315]: "0.35"
+          - generic [ref=f2e316]:
+            - generic [ref=f2e317]: 分块大小
+            - spinbutton "分块大小" [ref=f2e318]: "500"
+          - generic [ref=f2e319]:
+            - generic [ref=f2e320]: 分块重叠
+            - spinbutton "分块重叠" [ref=f2e321]: "80"
+          - generic [ref=f2e322]:
+            - generic [ref=f2e323]: 上下文历史消息数
+            - spinbutton "上下文历史消息数" [ref=f2e324]: "12"
+          - generic [ref=f2e325]:
+            - generic [ref=f2e326]: OCR DPI
+            - spinbutton "OCR DPI" [ref=f2e327]: "200"
+        - generic [ref=f2e329]:
+          - button [ref=f2e330] [cursor=pointer]
+          - generic [ref=f2e332]: 启用离线 OCR（扫描版 PDF 与图片中的文字识别，低配电脑可关闭）
+        - generic [ref=f2e334]:
+          - button [ref=f2e335] [cursor=pointer]
+          - generic [ref=f2e337]: 向量矩阵内存缓存（关闭后检索省内存但变慢，重启后生效）
+        - button "保存配置" [ref=f2e339] [cursor=pointer]
+      - generic [ref=f2e344]:
+        - generic [ref=f2e345]: 数据与路径
+        - generic [ref=f2e359]:
+          - generic [ref=f2e360]:
+            - generic [ref=f2e361]: 配置文件 .env
+            - code [ref=f2e362]: E:\project\AkaiRye_RAG\.env
+          - generic [ref=f2e363]:
+            - generic [ref=f2e364]: 数据目录
+            - code [ref=f2e365]: E:\project\AkaiRye_RAG\data\test_kb
+          - generic [ref=f2e366]:
+            - generic [ref=f2e367]: 数据库
+            - code [ref=f2e368]: E:\project\AkaiRye_RAG\data\test_kb\akairye.db
+          - generic [ref=f2e369]:
+            - generic [ref=f2e370]: 原始上传文件
+            - code [ref=f2e371]: E:\project\AkaiRye_RAG\data\test_kb\uploads
+        - generic [ref=f2e372]:
+          - generic [ref=f2e373]: 自定义数据目录 DATA_DIR（留空为程序同级 data，改后重启生效）
+          - textbox "自定义数据目录 DATA_DIR（留空为程序同级 data，改后重启生效）" [ref=f2e374]:
+            - /placeholder: 例如 D:\AkaiRyeData
+            - text: data/test_kb
+        - generic [ref=f2e375]: 备份只需复制 data 目录下的 akairye.db（建议退出程序后复制）；也可直接用记事本编辑 .env，保存后在本页点保存或重启生效。
+        - button "保存配置" [ref=f2e380] [cursor=pointer]
+      - generic [ref=f2e385]:
+        - generic [ref=f2e386]: 知识库维护
+        - generic [ref=f2e393]:
+          - generic [ref=f2e394]:
+            - generic [ref=f2e395]: "1"
+            - text: 文档
+          - generic [ref=f2e396]:
+            - generic [ref=f2e397]: "1859"
+            - text: 分块向量
+          - generic [ref=f2e398]:
+            - generic [ref=f2e399]: 76.1 MB
+            - text: 占用空间
+          - generic [ref=f2e400]:
+            - generic [ref=f2e401]: "2048"
+            - text: 向量维度
+        - generic [ref=f2e402]:
+          - button "重建索引" [ref=f2e403] [cursor=pointer]
+          - generic [ref=f2e409]: 更换向量模型后需要重建；进度请到「向量库」页查看。
+      - generic [ref=f2e410]:
+        - generic [ref=f2e411]: 使用说明
+        - list [ref=f2e416]:
+          - listitem [ref=f2e417]: 配置密钥：在上方填写火山方舟 ARK_API_KEY 并选择模型，点「测试连接」通过后即可对话；不配置密钥也能管理文档，但 AI 问答不可用。
+          - listitem [ref=f2e418]: 上传文档：到「向量库」页上传 PDF、Word、Excel、TXT 或图片，等待 解析→切分→嵌入 全部完成（扫描件与图片自动 OCR）。
+          - listitem [ref=f2e419]: 开始提问：系统优先检索本地知识库作答并标注 [1] 来源；知识库未命中时，只有「工具调用模式」为 auto/on 且已配置 Tavily Key，才会联网搜索。
+          - listitem [ref=f2e420]: 切换模型只改一行：修改 ARK_MODEL（换成新的豆包模型或 ep- 接入点）即可，其余配置无需变动；换向量模型记得重建索引。
+          - listitem [ref=f2e421]: 数据安全：.env 与 akairye.db 都在程序目录，可随时备份；所有网络服务仅监听本机 127.0.0.1。

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     ark_model: str = "doubao-seed-1-6-250615"
     temperature: float = 0.7
     max_tokens: int = 4096
+    # 推理强度：low 可显著缩短“思考”阶段（首字从数十秒降到 1~3 秒）；
+    # 留空则不发送该参数（个别模型不支持时会报 InvalidParameter）。
+    reasoning_effort: str = "low"
     tool_mode: str = "auto"
 
     # 向量模型
@@ -39,9 +42,8 @@ class Settings(BaseSettings):
     embedding_dim: int = 2048
     embedding_batch: int = 10
 
-    # Tavily
+    # Tavily（配置了 Key 即可用；是否真正联网由 TOOL_MODE 决定）
     tavily_api_key: SecretStr = SecretStr("")
-    tavily_enabled: bool = True
 
     # 检索与切分
     top_k: int = 6
@@ -67,6 +69,11 @@ class Settings(BaseSettings):
     @property
     def tool_mode_value(self) -> ToolMode:
         return self.tool_mode if self.tool_mode in ("auto", "on", "off") else "auto"
+
+    @property
+    def reasoning_effort_value(self) -> str | None:
+        v = (self.reasoning_effort or "").strip().lower()
+        return v if v in ("minimal", "low", "medium", "high") else None
 
     @property
     def vector_cache_on(self) -> bool:
@@ -96,7 +103,8 @@ class Settings(BaseSettings):
 
     @property
     def tavily_usable(self) -> bool:
-        return self.tavily_enabled and self.has_tavily_key
+        # TAVILY_ENABLED 已取消：有 Key 即可用，是否联网由工具模式（TOOL_MODE）决定
+        return self.has_tavily_key
 
     @property
     def data_dir_path(self):
@@ -186,7 +194,6 @@ class SettingsStore:
             "embedding_batch": s.embedding_batch,
             "tavily_api_key_configured": s.has_tavily_key,
             "tavily_api_key_hint": _mask_last4(s.tavily_api_key.get_secret_value()),
-            "tavily_enabled": s.tavily_enabled,
             "tavily_usable": s.tavily_usable,
             "top_k": s.top_k,
             "similarity_threshold": s.similarity_threshold,

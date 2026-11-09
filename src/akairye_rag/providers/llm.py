@@ -13,6 +13,9 @@ def build_chat_model(s: Settings, *, streaming: bool = True) -> ChatOpenAI:
         api_key=s.ark_api_key.get_secret_value(),
         temperature=s.temperature,
         max_tokens=s.max_tokens,
+        # 思考型模型（如 glm-5.3-flash）默认会先进行长时间内部推理，
+        # 首字可能要等 40 秒以上；low 可把这段等待压到 1~3 秒。
+        reasoning_effort=s.reasoning_effort_value,
         timeout=120,
         max_retries=2,
         streaming=streaming,

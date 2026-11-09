@@ -191,7 +191,7 @@ async function commitEdit() {
         <div v-if="!chat.messages.length" class="empty">
           <div class="empty-logo">A</div>
           <h2>AkaiRye 知识RAG平台</h2>
-          <p>基于本地知识库优先作答，未命中时自动联网检索。</p>
+          <p>基于本地知识库优先作答；工具模式为 auto 且已配置 Tavily Key 时，未命中可联网检索。</p>
           <div class="tips">
             <div class="tip" @click="input = '总结一下知识库中的主要内容'; doSend()">
               <Sparkles :size="14" /> 总结知识库中的主要内容
@@ -243,8 +243,12 @@ async function commitEdit() {
         </div>
         <div class="composer-hint">
           <span><Globe :size="11" /> 联网搜索：
-            <b :class="app.tavilyUsable ? 'on' : 'off'">
-              {{ app.tavilyUsable ? 'Tavily 可用' : '未配置 / 已禁用' }}
+            <b :class="app.tavilyEffective ? 'on' : 'off'">
+              {{ app.tavilyEffective
+                ? 'Tavily 可用'
+                : app.tavilyUsable
+                  ? '已配置 Key，但工具模式为 off，本轮不会联网'
+                  : '未配置 Key' }}
             </b>
           </span>
           <span class="muted">回答由 AI 生成，请核对关键信息</span>

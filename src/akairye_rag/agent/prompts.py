@@ -1,7 +1,10 @@
 """系统提示词与知识库片段格式化。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from akairye_rag.retrieval.router import Route
 
 BASE_INSTRUCTIONS = (
     "你是 AkaiRye 知识RAG平台 的智能助手，服务于中文用户。要求：\n"
@@ -13,6 +16,8 @@ BASE_INSTRUCTIONS = (
 
 KB_HIT_INSTRUCTIONS = (
     "以下是从用户【本地知识库】检索到的相关片段，是回答的首要依据。"
+    "检索已在提问前完成，片段就在下方；不要为了重复同一问题再次调用 knowledge_search，"
+    "只有确实需要换关键词补充资料时才调用一次。"
     "只有当这些片段明显不足以回答、或问题涉及时效性/外部信息时，才可调用联网搜索工具。\n"
 )
 
@@ -28,10 +33,61 @@ OFF_HIT_INSTRUCTIONS = (
 )
 
 OFF_MISS_INSTRUCTIONS = (
-    "本地知识库中未检索到与该问题相关的内容，且当前已关闭联网搜索。"
-    "请直接、礼貌地告知用户：知识库中暂无相关资料，可上传相关文档或在系统设置中开启联网。"
+    "本地知识库中未检索到与该问题相关的内容；当前为「仅知识库」模式（工具调用已关闭），无法联网。"
+    "请直接、礼貌地告知用户：知识库中暂无相关资料，可上传相关文档，"
+    "或在系统设置中把工具调用模式改为 auto 并开启 Tavily 联网搜索。"
     "不要根据自身常识编造答案。\n"
 )
+
+
+# ---- 产品分流（retrieval/router.py）----
+
+ROUTE_EXPLICIT = (
+    "本轮问题明确指向【{labels}】。你只能依据【{labels}】的知识库片段回答：\n"
+    "- 即使其他产品有同名指令或相似功能，本轮也不要提及、不要引用。\n"
+    "- 若片段不足以回答，请如实说明该产品资料中未找到，不要用其他产品资料补答。\n"
+)
+
+ROUTE_IMPLIED = (
+    "本轮问题未点名产品，但检索已按指令/内容匹配锁定为【{labels}】。\n"
+    "- 首轮回答只使用【{labels}】的片段；其他产品虽有相似功能，本轮不要展开。\n"
+    "- 若用户再次追问，才可以补充其他产品的内容。\n"
+)
+
+ROUTE_RELAXED = (
+    "用户本轮属于再次追问（或明确要求看其他产品），可以补充其他产品的相近/同名功能；\n"
+    "- 但必须逐条注明内容来自哪个产品，不要混为一谈。\n"
+)
+
+ROUTE_EXACT_HIT = "- 指令关键词：{tokens}（当前片段已优先按该关键词精确筛选）。\n"
+ROUTE_EXACT_MISS = (
+    "- 指令关键词：{tokens}（未找到精确命中的片段，以下为语义相近结果；回答前需说明这一点）。\n"
+)
+
+ROUTE_SCOPE_MISS = (
+    "本地知识库【没有检索到】与【{labels}】相关的片段。请如实告知用户：知识库中暂缺该产品资料，"
+    "可上传对应文档；不要用其他产品的资料替代，也不要臆造。\n"
+)
+
+
+def format_route(route: "Route | None") -> str:
+    """把路由决策渲染成给模型看的约束段；无分流信息时返回 ""。"""
+    if route is None:
+        return ""
+    labels = "、".join(route.labels)
+    parts: list[str] = []
+    if route.products and route.source == "implied":
+        parts.append(ROUTE_IMPLIED.format(labels=labels))
+    elif route.products:
+        parts.append(ROUTE_EXPLICIT.format(labels=labels))
+    if route.relaxed and not route.products:
+        parts.append(ROUTE_RELAXED)
+    if route.tokens:
+        tokens = "、".join(route.tokens)
+        parts.append((ROUTE_EXACT_HIT if route.exact else ROUTE_EXACT_MISS).format(tokens=tokens))
+    if not parts:
+        return ""
+    return "===== 检索分层（必须遵守）=====\n" + "".join(parts)
 
 
 def format_kb_hits(hits: list[dict[str, Any]]) -> str:
@@ -47,15 +103,30 @@ def format_kb_hits(hits: list[dict[str, Any]]) -> str:
     return "===== 本地知识库检索片段 =====\n" + "\n\n".join(blocks) + "\n===== 片段结束 ====="
 
 
-def build_system_prompt(hits: list[dict[str, Any]], *, tool_mode: str, tavily_usable: bool) -> str:
+def build_system_prompt(
+    hits: list[dict[str, Any]],
+    *,
+    tool_mode: str,
+    tavily_usable: bool,
+    route: "Route | None" = None,
+) -> str:
     context = format_kb_hits(hits)  # 空输入时返回 ""
-    if tool_mode == "off":
+    scoped_labels = "、".join(route.labels) if route and route.labels else ""
+    if route and route.products and not hits:
+        # 已锁定某产品但该产品没有资料：不能说“知识库没有”，更不能拿别家资料顶替
+        instr = ROUTE_SCOPE_MISS.format(labels=scoped_labels)
+        if tool_mode != "off" and tavily_usable:
+            instr += "（如调用 tavily_web_search，也只能围绕该产品检索，不能用其他产品替代。）\n"
+    elif tool_mode == "off":
         instr = OFF_HIT_INSTRUCTIONS if hits else OFF_MISS_INSTRUCTIONS
     else:
         instr = KB_HIT_INSTRUCTIONS if hits else KB_MISS_INSTRUCTIONS
         if not tavily_usable:
             instr += "（当前未配置/未启用联网搜索，无法调用 tavily_web_search。）\n"
     parts = [BASE_INSTRUCTIONS, instr]
+    route_text = format_route(route)
+    if route_text:
+        parts.append(route_text)
     if context:
         parts.append(context)
     return "\n\n".join(parts)

@@ -34,7 +34,10 @@ def _wait_health(port: int, timeout: float = 20.0) -> bool:
     url = f"http://127.0.0.1:{port}/api/health"
     while time.time() < deadline:
         try:
-            r = httpx.get(url, timeout=1.0)
+            # trust_env=False：回环请求必须直连。
+            # 部分加速器（Steam++/Clash 等）会把系统代理写进注册表（127.0.0.1:端口），
+            # httpx 默认 trust_env=True 会读系统代理，导致健康检查被代理拦截而永远失败。
+            r = httpx.get(url, timeout=1.0, trust_env=False)
             if r.status_code == 200:
                 return True
         except Exception:

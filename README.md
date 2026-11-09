@@ -8,6 +8,7 @@
 - 答案为 Claude 风格 Markdown 渲染（代码高亮、表格、引用、复制按钮）
 - 所有密钥与参数放在 exe 同目录的 **`.env`**（不打包），可在系统设置页热修改、随时切换模型
 - 自研 SQLite 向量存储（float32 + numpy 余弦），无 Chroma 重依赖，单文件备份，断网可用
+- **多产品检索分流**：问题明确提到 ACS / AGITO / 高创 / AKRIBIS 等品牌时只检索该产品资料；指令类问题（PTP、0x607A…）优先精确命中，未点名品牌时首轮锁定主导产品，再次追问才展开其他产品对比（产品目录见 `src/akairye_rag/retrieval/router.py` 的 `PRODUCTS`）
 
 > 📖 **完整架构设计**（模块划分 / 数据模型 / 核心流程 / SSE 协议 / 安全与打包）：见 [docs/架构设计.md](docs/架构设计.md)
 
@@ -45,8 +46,9 @@ scripts\dev.bat
 |---|---|
 | `ARK_API_KEY` / `ARK_BASE_URL` / `ARK_MODEL` | 火山方舟对话模型（OpenAI 兼容），模型 ID 或 `ep-` 接入点 |
 | `EMBEDDING_*` | 向量模型；KEY/BASE_URL 留空则回退到 ARK 配置。换模型/维度后需在「向量库」页**重建索引** |
-| `TAVILY_API_KEY` / `TAVILY_ENABLED` | 联网搜索；不配置则自动禁用并在界面提示 |
+| `TAVILY_API_KEY` | 联网搜索；配置 Key 即可用，未命中时是否联网由 `TOOL_MODE` 决定 |
 | `TOOL_MODE` | `auto` 知识库优先、模型自决联网；`on` 强制使用工具；`off` 仅用知识库 |
+| `REASONING_EFFORT` | 模型推理强度；`low` 显著缩短思考型模型的首字等待，留空则不发送该参数 |
 
 > **401 鉴权失败？** 若你的方舟 Key 属于套餐订阅（标准 `/api/v3` 返回 401），把 `ARK_BASE_URL` 改成 `https://ark.cn-beijing.volces.com/api/plan/v3`。
 > **套餐端点限流（429）？** 套餐端点嵌入接口限制约 6 次/分钟、每次最多 10 条。程序已内置自动降批、指数退避（3/6/10/12s，最多约 6 分钟）与分批提交，长文档入库较慢（数千分块可能约 1 小时），后台运行即可、进度不丢；需要更快可在方舟控制台为该模型开通按量付费后改用标准端点。

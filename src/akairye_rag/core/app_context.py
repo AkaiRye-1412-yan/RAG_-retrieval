@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +43,10 @@ class AppContext:
             embeddings_factory=lambda: build_embeddings(self.settings_store.get()),
             cache_on=s.vector_cache_on,
         )
+        # 文档 → 产品线 归类缓存（由 retrieval.router.document_product_map 维护）
+        self._product_map: dict[str, str] = {}
+        self._product_map_signature: tuple | None = None
+        self._product_map_lock = threading.RLock()
         self.jobs = JobManager(self)
 
     def uploads_dir(self) -> Path:
@@ -50,14 +55,52 @@ class AppContext:
     def upload_path(self, doc_id: str, ext: str) -> Path:
         return self.uploads_dir() / f"{doc_id}.{ext}"
 
-    async def kb_search(self, query: str, s: "Settings") -> list[dict[str, Any]]:
-        """知识库检索（线程池执行，避免阻塞事件循环），按 settings 快照取 top_k/阈值。"""
+    async def kb_search(
+        self,
+        query: str,
+        s: "Settings",
+        *,
+        doc_ids: tuple[str, ...] | None = None,
+        exact_tokens: tuple[str, ...] = (),
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """知识库检索（线程池执行，避免阻塞事件循环）。
+
+        doc_ids：产品分流后的文档范围（None=全库；空元组=该产品无文档，直接无命中）。
+        exact_tokens：指令/命令词，命中片段优先；没有任何精确命中时回退语义结果。
+        """
         return await asyncio.to_thread(
-            self.vector_store.search,
-            query,
-            k=s.top_k,
-            threshold=s.similarity_threshold,
+            self._kb_search_sync, query, s, doc_ids, exact_tokens, limit
         )
+
+    def _kb_search_sync(
+        self,
+        query: str,
+        s: "Settings",
+        doc_ids: tuple[str, ...] | None,
+        exact_tokens: tuple[str, ...],
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        cap = limit or s.top_k
+        fetch_k = max(cap, s.top_k * 4) if exact_tokens else cap
+        # 指令问题放宽语义阈值，给“命令词精确命中但语义分数一般”的片段一个机会；
+        # 后面的精确过滤会把噪声去掉。
+        threshold = s.similarity_threshold
+        if exact_tokens and threshold > 0.25:
+            threshold = 0.25
+        hits = self.vector_store.search(
+            query,
+            k=fetch_k,
+            threshold=threshold,
+            filter={"doc_ids": doc_ids} if doc_ids is not None else None,
+        )
+        if exact_tokens:
+            from akairye_rag.retrieval.router import content_has_any_token
+
+            matched = [h for h in hits if content_has_any_token(h["content"], exact_tokens)]
+            if matched:  # 精确指令命中优先；全都没有时回退，避免误伤正常问答
+                hits = matched
+        return hits[:cap]
 
     def shutdown(self) -> None:
         try:

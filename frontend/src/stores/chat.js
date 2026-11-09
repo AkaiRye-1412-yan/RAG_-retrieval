@@ -97,6 +97,9 @@ export const useChatStore = defineStore('chat', {
           running.hits = ev.hits
           running.top_score = ev.top_score
           running.error = ev.error
+          running.product = ev.product
+          running.tokens = ev.tokens
+          running.scoped = ev.scoped
         } else {
           answer.tool_steps.push({
             name: ev.name,
@@ -104,6 +107,9 @@ export const useChatStore = defineStore('chat', {
             hits: ev.hits,
             top_score: ev.top_score,
             error: ev.error,
+            product: ev.product,
+            tokens: ev.tokens,
+            scoped: ev.scoped,
           })
         }
       }

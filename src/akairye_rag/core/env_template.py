@@ -21,6 +21,9 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 ARK_MODEL=doubao-seed-1-6-250615
 TEMPERATURE=0.7
 MAX_TOKENS=4096
+# 推理强度：low=缩短模型“思考”阶段，首字更快（推荐）；medium/high=更慢更细；留空=不发送该参数
+# 若切换的模型不支持该参数并报 InvalidParameter，请把本项留空
+REASONING_EFFORT=low
 # 工具调用模式：auto=模型自决（知识库优先） / on=强制使用工具 / off=仅用知识库、不联网
 TOOL_MODE=auto
 
@@ -33,10 +36,9 @@ EMBEDDING_DIM=2048
 # 单次嵌入批大小（套餐端点 /api/plan/v3 上限为 10；标准端点可调到 32/64；程序遇批量上限会自动降批）
 EMBEDDING_BATCH=10
 
-# ===== Tavily 联网搜索（留空则自动禁用联网，界面会提示）=====
+# ===== Tavily 联网搜索（配置 Key 即可用；是否联网由上面的 TOOL_MODE 决定）=====
 # 申请：https://app.tavily.com/
 TAVILY_API_KEY=
-TAVILY_ENABLED=true
 
 # ===== 检索与切分 =====
 TOP_K=6

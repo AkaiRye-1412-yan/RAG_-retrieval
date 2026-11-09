@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   Bot,
   AudioLines,
@@ -45,7 +45,6 @@ const form = reactive({
   embedding_base_url: '',
   embedding_dim: 2048,
   embedding_batch: 32,
-  tavily_enabled: true,
   top_k: 6,
   similarity_threshold: 0.35,
   chunk_size: 500,
@@ -66,6 +65,23 @@ const testing = reactive({ chat: false, emb: false })
 const testResult = reactive({ chat: null, emb: null })
 const saving = ref(false)
 const reindexing = ref(false)
+
+// 唯一的联网总开关是 TOOL_MODE；Tavily 只判断 Key 是否配置。
+const toolModeText = computed(
+  () =>
+    ({
+      auto: '先检索本地知识库；未命中且已配置 Tavily Key 时，模型可自行调用联网搜索。',
+      on: '每轮回答前强制调用工具（通常先查知识库，必要时联网）。',
+      off: '只依据本地知识库作答，不调用任何工具，也不会联网。',
+    })[form.tool_mode] || ''
+)
+
+// 有 Key 即可用；工具模式为 off 时不会被调用。
+const tavilyState = computed(() => {
+  if (!masks.tav) return { ok: false, text: '未配置 Key' }
+  if (form.tool_mode === 'off') return { ok: false, text: '工具模式 off，不会联网' }
+  return { ok: true, text: '可用' }
+})
 
 onMounted(load)
 
@@ -91,7 +107,6 @@ async function load() {
     embedding_base_url: s.embedding_base_url,
     embedding_dim: s.embedding_dim,
     embedding_batch: s.embedding_batch,
-    tavily_enabled: s.tavily_enabled,
     top_k: s.top_k,
     similarity_threshold: s.similarity_threshold,
     chunk_size: s.chunk_size,
@@ -248,18 +263,19 @@ async function doReindex() {
           </div>
 
           <div class="field">
-            <span class="lbl">工具调用模式</span>
+            <span class="lbl">工具调用模式（总开关）</span>
             <div class="segmented">
               <button
-                v-for="m in [{k:'auto',t:'auto（自动探测）'},{k:'on',t:'on（强制启用）'},{k:'off',t:'off（关闭）'}]"
+                v-for="m in [{k:'auto',t:'auto（自动）'},{k:'on',t:'on（强制工具）'},{k:'off',t:'off（仅知识库）'}]"
                 :key="m.k"
                 type="button"
                 :class="{ active: form.tool_mode === m.k }"
                 @click="form.tool_mode = m.k"
               >{{ m.t }}</button>
             </div>
-            <p class="hint">
-              auto = 优先本地知识库，未命中时模型可调用联网搜索；on = 强制先使用工具；off = 仅依据知识库回答、不联网。
+            <p class="hint">{{ toolModeText }}</p>
+            <p class="hint hint-sub">
+              联网搜索由本模式控制：配置了下方 Tavily Key 后，auto/on 时模型才会按需联网。
             </p>
           </div>
 
@@ -337,9 +353,9 @@ async function doReindex() {
         <section class="card set-card">
           <header>
             <span class="section-title"><span class="bar"></span><Globe :size="15" /> Tavily 联网搜索</span>
-            <span class="badge" :class="masks.tav && form.tavily_enabled ? 'badge-ok' : 'badge-warn'">
-              <span class="dot" :class="masks.tav && form.tavily_enabled ? 'dot-ok' : 'dot-live'"></span>
-              {{ masks.tav ? (form.tavily_enabled ? '可用' : '已手动关闭') : '未配置 Key' }}
+            <span class="badge" :class="tavilyState.ok ? 'badge-ok' : 'badge-warn'">
+              <span class="dot" :class="tavilyState.ok ? 'dot-ok' : 'dot-live'"></span>
+              {{ tavilyState.text }}
             </span>
           </header>
           <label class="field">
@@ -356,15 +372,10 @@ async function doReindex() {
               </button>
             </div>
           </label>
-          <div class="field">
-            <span class="lbl">启用联网搜索</span>
-            <div class="switch-row">
-              <button class="switch" :class="{ on: form.tavily_enabled }" @click="form.tavily_enabled = !form.tavily_enabled">
-                <span class="knob"></span>
-              </button>
-              <span class="muted">{{ form.tavily_enabled ? '知识库未命中时允许联网搜索' : '已关闭，仅使用本地知识库' }}</span>
-            </div>
-          </div>
+          <p class="hint">
+            配置 Key 即启用，没有额外的开关。是否联网由上方「工具调用模式」决定：
+            auto 未命中时才联网，on 强制先调用工具，off 永不联网。
+          </p>
           <div class="actions">
             <SaveButton :saving="saving" @click="save" />
           </div>
@@ -461,7 +472,7 @@ async function doReindex() {
           <ol>
             <li><b>配置密钥</b>：在上方填写火山方舟 ARK_API_KEY 并选择模型，点「测试连接」通过后即可对话；不配置密钥也能管理文档，但 AI 问答不可用。</li>
             <li><b>上传文档</b>：到「向量库」页上传 PDF、Word、Excel、TXT 或图片，等待 解析→切分→嵌入 全部完成（扫描件与图片自动 OCR）。</li>
-            <li><b>开始提问</b>：系统优先检索本地知识库作答并标注 [1] 来源；知识库未命中且配置了 Tavily 时自动联网搜索。</li>
+            <li><b>开始提问</b>：系统优先检索本地知识库作答并标注 [1] 来源；知识库未命中时，只有「工具调用模式」为 auto/on 且已配置 Tavily Key，才会联网搜索。</li>
             <li><b>切换模型只改一行</b>：修改 ARK_MODEL（换成新的豆包模型或 ep- 接入点）即可，其余配置无需变动；换向量模型记得重建索引。</li>
             <li><b>数据安全</b>：.env 与 akairye.db 都在程序目录，可随时备份；所有网络服务仅监听本机 127.0.0.1。</li>
           </ol>
@@ -629,6 +640,11 @@ async function doReindex() {
   color: var(--muted-2);
   margin-top: 6px;
   line-height: 1.6;
+}
+.hint-sub {
+  margin-top: 2px;
+  color: var(--muted-2);
+  opacity: 0.85;
 }
 .actions {
   display: flex;

@@ -32,7 +32,6 @@ class SettingsIn(BaseModel):
     embedding_batch: int | None = None
 
     tavily_api_key: str | None = None
-    tavily_enabled: bool | None = None
 
     temperature: float | None = None
     max_tokens: int | None = None

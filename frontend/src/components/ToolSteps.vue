@@ -21,6 +21,9 @@ const NAME_MAP = {
       <span class="step-label">{{ NAME_MAP[s.name]?.label || s.name }}</span>
       <StatusIcon :status="s.status" :size="12" />
       <span v-if="s.status === 'done'" class="step-meta">
+        <template v-if="s.product && s.product.length">
+          <span class="step-scope">{{ s.product.join('、') }}</span> ·
+        </template>
         {{ s.hits ?? 0 }} 条结果<template v-if="s.top_score != null">
           · 最高相关度 {{ Number(s.top_score).toFixed(2) }}
         </template>
@@ -69,6 +72,10 @@ const NAME_MAP = {
 }
 .step-meta {
   color: var(--muted);
+}
+.step-scope {
+  color: var(--cyan);
+  font-weight: 600;
 }
 .running-text {
   color: var(--cyan);

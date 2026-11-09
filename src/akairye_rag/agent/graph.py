@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Any
 
 from langchain_core.messages import (
@@ -27,6 +28,20 @@ MAX_TOOL_ROUNDS = 3
 class ChatState(MessagesState):
     query: str
     hits: list[dict[str, Any]]
+    route: Any  # retrieval.router.Route
+
+
+def _route_event(route) -> dict[str, Any]:
+    """给前端工具步骤追加的分流信息（不影响现有渲染，未知字段会被忽略）。"""
+    extra: dict[str, Any] = {}
+    if route is not None:
+        if route.labels:
+            extra["product"] = route.labels
+        if route.tokens:
+            extra["tokens"] = list(route.tokens)
+        if route.scoped:
+            extra["scoped"] = True
+    return extra
 
 
 def build_chat_graph(ctx, s):
@@ -42,8 +57,41 @@ def build_chat_graph(ctx, s):
         writer(_tool_start("knowledge_search", query))
         hits: list[dict[str, Any]] = []
         err = None
+        route = None
         try:
-            raw = await ctx.kb_search(query, s)
+            from akairye_rag.retrieval import router as routing
+
+            # 1) 先分层：识别产品 / 指令词 / 是否再次追问
+            product_map = await asyncio.to_thread(routing.document_product_map, ctx)
+            previous = routing.previous_user_texts(state["messages"], query)
+            route = routing.analyze_query(query, previous, product_map)
+
+            # 2) 再检索：明确产品 → 文档级硬过滤；指令问题 → 多取候选后精确筛选
+            limit = max(s.top_k, 24) if route.tokens else s.top_k
+            raw = await ctx.kb_search(
+                query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
+            )
+            if route.tokens:
+                matched = [
+                    h for h in raw
+                    if routing.content_has_any_token(h["content"], route.tokens)
+                ]
+                if matched:
+                    route = replace(route, exact=True)
+                    # 未点名产品时，用精确命中片段的主导产品锁定首轮范围，
+                    # 避免其他产品的同名指令混进第一次回答
+                    if not route.relaxed and not route.products:
+                        dominant = routing.dominant_product(matched, product_map)
+                        if dominant:
+                            route = routing.lock_route(route, dominant, product_map)
+                            matched = [
+                                h for h in matched
+                                if product_map.get(h["doc_id"]) == dominant
+                            ]
+                    raw = matched
+                else:
+                    route = replace(route, exact=False)
+            raw = raw[: s.top_k]
             hits = await asyncio.to_thread(_kb_items, ctx, raw)
         except Exception as e:
             err = str(e)[:EVENT_ERROR_MAX]
@@ -53,21 +101,43 @@ def build_chat_graph(ctx, s):
                 "knowledge_search", hits,
                 top_score=hits[0]["score"] if hits else None,
                 error=err,
+                extra=_route_event(route),
             )
         )
-        return {"hits": hits}
+        return {"hits": hits, "route": route}
 
     async def generate_direct(state: ChatState):
         """off 模式：纯 RAG 链，不绑工具，按资料说话。"""
-        system = build_system_prompt(state["hits"], tool_mode="off", tavily_usable=False)
+        system = build_system_prompt(
+            state["hits"], tool_mode="off", tavily_usable=False, route=state.get("route")
+        )
         ai: AIMessage = await llm.ainvoke(
             [SystemMessage(content=system), *state["messages"]]
         )
         return {"messages": [ai]}
 
     async def agent_node(state: ChatState):
-        tools = make_agent_tools(ctx, s, base_ref=len(state["hits"]))
-        system_text = build_system_prompt(state["hits"], tool_mode=mode, tavily_usable=tavily_ok)
+        route = state.get("route")
+        # 明确点名（或已锁定）产品时，业务规则要求只用该产品知识库作答。
+        # 此时直接基于预检索片段生成：不给模型联网/二次检索工具，
+        # 既避免混入其他产品内容，也省掉 2~3 轮模型往返与联网等待。
+        if mode == "auto" and route is not None and route.products:
+            system = build_system_prompt(
+                state["hits"], tool_mode="off", tavily_usable=False, route=route
+            )
+            ai: AIMessage = await llm.ainvoke(
+                [SystemMessage(content=system), *state["messages"]]
+            )
+            return {"messages": [ai]}
+
+        # 工具二次检索沿用产品范围，防止模型自己绕回全库
+        tools = make_agent_tools(
+            ctx, s, base_ref=len(state["hits"]),
+            doc_ids=route.doc_ids if route is not None else None,
+        )
+        system_text = build_system_prompt(
+            state["hits"], tool_mode=mode, tavily_usable=tavily_ok, route=route
+        )
         messages: list = [SystemMessage(content=system_text), *state["messages"]]
 
         choice: str = "required" if mode == "on" else "auto"

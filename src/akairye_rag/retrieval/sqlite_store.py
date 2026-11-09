@@ -162,12 +162,17 @@ class SQLiteVectorStore(VectorStore):
         emb = self.embeddings
         qraw = self._call_with_rate_guard(lambda: emb.embed_query(query))
         qvec = _l2_normalize(np.asarray(qraw, dtype=np.float32))
-        doc_filter = (filter or {}).get("doc_id")
+        cond = filter or {}
+        doc_filter = cond.get("doc_id")
+        # doc_ids：产品分流后限定在一批文档内检索（None=不限制；空集合=无可用文档）
+        doc_ids = cond.get("doc_ids")
+        if doc_ids is not None:
+            doc_ids = tuple(doc_ids)
         with self._lock:
             if self.cache_on:
-                hits = self._search_cached(qvec, k, doc_filter)
+                hits = self._search_cached(qvec, k, doc_filter, doc_ids)
             else:
-                hits = self._search_stream(qvec, k, doc_filter)
+                hits = self._search_stream(qvec, k, doc_filter, doc_ids)
         if threshold is not None:
             hits = [h for h in hits if h[1] >= threshold]
         if not hits:
@@ -378,7 +383,13 @@ class SQLiteVectorStore(VectorStore):
             len(rows), self._V.shape[0], self._V.shape[1],
         )
 
-    def _search_cached(self, qvec: np.ndarray, k: int, doc_filter: str | None) -> list[tuple[str, float]]:
+    def _search_cached(
+        self,
+        qvec: np.ndarray,
+        k: int,
+        doc_filter: str | None,
+        doc_ids: tuple[str, ...] | None = None,
+    ) -> list[tuple[str, float]]:
         self._ensure_matrix()
         assert self._V is not None and self._ids is not None and self._doc_ids is not None
         n = self._V.shape[0]
@@ -390,15 +401,31 @@ class SQLiteVectorStore(VectorStore):
             if not mask.any():
                 return []
             scores = np.where(mask, scores, -np.inf)
+        if doc_ids is not None:
+            if not doc_ids:
+                return []
+            mask = np.isin(self._doc_ids, np.asarray(doc_ids, dtype=object))
+            if not mask.any():
+                return []
+            scores = np.where(mask, scores, -np.inf)
         kk = min(k, n)
         idx = np.argpartition(scores, -kk)[-kk:]
         idx = idx[np.argsort(scores[idx])[::-1]]
         return [(str(self._ids[i]), float(scores[i])) for i in idx if np.isfinite(scores[i])]
 
-    def _search_stream(self, qvec: np.ndarray, k: int, doc_filter: str | None) -> list[tuple[str, float]]:
+    def _search_stream(
+        self,
+        qvec: np.ndarray,
+        k: int,
+        doc_filter: str | None,
+        doc_ids: tuple[str, ...] | None = None,
+    ) -> list[tuple[str, float]]:
         """分批加载、维护大小为 k 的 top-k 堆，内存有界。"""
         import heapq
 
+        if doc_ids is not None and not doc_ids:
+            return []
+        allowed = set(doc_ids) if doc_ids is not None else None
         heap: list[tuple[float, str]] = []
         offset = 0
         with self.db.lock:
@@ -417,6 +444,8 @@ class SQLiteVectorStore(VectorStore):
             scores = mat @ qvec
             for r, score in zip(rows, scores):
                 if doc_filter is not None and r["doc_id"] != doc_filter:
+                    continue
+                if allowed is not None and r["doc_id"] not in allowed:
                     continue
                 item = (float(score), str(r["id"]))
                 if len(heap) < k:

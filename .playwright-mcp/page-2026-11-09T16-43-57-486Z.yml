@@ -1,0 +1,43 @@
+- generic [ref=f3e3]:
+  - complementary [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - generic [ref=f3e6]: A
+      - generic [ref=f3e7]:
+        - generic [ref=f3e8]: AkaiRye
+        - generic [ref=f3e9]: 知识RAG平台
+    - navigation [ref=f3e10]:
+      - button "检索聊天" [ref=f3e11] [cursor=pointer]
+      - button "向量库" [ref=f3e15] [cursor=pointer]
+      - button "系统配置" [ref=f3e21] [cursor=pointer]
+    - generic [ref=f3e26]: AI 已配置
+  - generic [ref=f3e31]:
+    - generic [ref=f3e32]:
+      - generic [ref=f3e33]:
+        - generic [ref=f3e34]: 对话列表
+        - button "新建对话" [ref=f3e35] [cursor=pointer]
+      - generic [ref=f3e37]:
+        - generic [ref=f3e38] [cursor=pointer]: tavily-compare
+        - generic [ref=f3e40] [cursor=pointer]: tavily-compare
+        - generic [ref=f3e42] [cursor=pointer]: off-switch-test
+        - generic [ref=f3e44] [cursor=pointer]: token-timing
+        - generic [ref=f3e46] [cursor=pointer]: latency-e2e-2
+        - generic [ref=f3e48] [cursor=pointer]: latency-e2e
+        - generic [ref=f3e50] [cursor=pointer]: 回零
+    - generic [ref=f3e52]:
+      - generic [ref=f3e53]:
+        - generic [ref=f3e54]: tavily-compare
+        - button "清除当前对话" [ref=f3e59] [cursor=pointer]
+      - generic [ref=f3e64]:
+        - generic [ref=f3e65]: A
+        - heading "AkaiRye 知识RAG平台" [level=2] [ref=f3e66]
+        - paragraph [ref=f3e67]: 基于本地知识库优先作答；工具模式为 auto 且已配置 Tavily Key 时，未命中可联网检索。
+        - generic [ref=f3e68]:
+          - generic [ref=f3e69] [cursor=pointer]: 总结知识库中的主要内容
+          - generic [ref=f3e72] [cursor=pointer]: 上传文档构建向量库
+      - generic [ref=f3e74]:
+        - generic [ref=f3e75]:
+          - textbox "输入你的问题，Enter 发送，Shift+Enter 换行…" [ref=f3e76]
+          - button [disabled] [ref=f3e77] [cursor=pointer]
+        - generic [ref=f3e81]:
+          - generic [ref=f3e82]: 联网搜索： 已配置 Key，但工具模式为 off，本轮不会联网
+          - generic [ref=f3e86]: 回答由 AI 生成，请核对关键信息
