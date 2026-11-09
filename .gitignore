@@ -25,3 +25,6 @@ frontend/dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 浏览器调试产物（Playwright MCP）
+.playwright-mcp/
