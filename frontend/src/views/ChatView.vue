@@ -206,7 +206,9 @@ async function commitEdit() {
           <div v-if="m.role === 'assistant'" class="avatar">A</div>
           <div class="bubble">
             <ToolSteps v-if="m.tool_steps && m.tool_steps.length" :steps="m.tool_steps" />
-            <MarkdownView :content="m.content || ''" />
+            <!-- 用户提问按纯文本渲染：保留换行，同时避免 Markdown 输出末尾的换行被 pre-wrap 撑成空行 -->
+            <div v-if="m.role === 'user'" class="user-text">{{ m.content || '' }}</div>
+            <MarkdownView v-else :content="m.content || ''" />
             <span v-if="m.streaming && !m.tool_steps?.some((x) => x.status === 'running')" class="cursor"></span>
             <SourceChips v-if="m.sources && m.sources.length" :items="m.sources" />
           </div>
@@ -495,9 +497,17 @@ async function commitEdit() {
   background: linear-gradient(135deg, rgba(6, 182, 212, 0.22), rgba(8, 145, 178, 0.14));
   border: 1px solid rgba(34, 211, 238, 0.25);
   border-radius: 12px 12px 3px 12px;
-  padding: 10px 15px;
+  padding: 9px 14px;
+  line-height: 1.65;
+}
+/* 用户提问：正文 14px + 加粗 + 纯白，保留换行、长词不撑破 */
+.user-text {
   white-space: pre-wrap;
-  line-height: 1.7;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.6;
+  color: #ffffff;
 }
 .msg-row.assistant .bubble {
   flex: 1;
