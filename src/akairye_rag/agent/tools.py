@@ -61,7 +61,11 @@ def number(items: list[dict[str, Any]], counter: dict[str, int]) -> list[dict[st
     return numbered
 
 
-def _kb_items(ctx: "AppContext", hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _kb_items(
+    ctx: "AppContext",
+    hits: list[dict[str, Any]],
+    product_map: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     if not hits:
         return []
     placeholders = ",".join("?" for _ in {h["doc_id"] for h in hits})
@@ -70,9 +74,16 @@ def _kb_items(ctx: "AppContext", hits: list[dict[str, Any]]) -> list[dict[str, A
         list({h["doc_id"] for h in hits}),
     ).fetchall()
     names = {r["id"]: r["filename"] for r in rows}
+    if product_map is None:
+        from akairye_rag.retrieval.router import document_product_map
+
+        product_map = document_product_map(ctx)
+    from akairye_rag.retrieval.router import product_label
+
     items = []
     for h in hits:
         loc = h.get("locator") or {}
+        key = h.get("product_key") or product_map.get(h["doc_id"], "")
         items.append(
             {
                 "kind": "kb",
@@ -80,6 +91,8 @@ def _kb_items(ctx: "AppContext", hits: list[dict[str, Any]]) -> list[dict[str, A
                 "doc_id": h["doc_id"],
                 "doc_name": names.get(h["doc_id"], "未知文档"),
                 "label": loc.get("label", ""),
+                "product_key": key,
+                "product": product_label(key) if key else "",
                 "score": h.get("score"),
                 "snippet": h["content"][:SNIPPET_LEN],
                 "content": h["content"],
@@ -94,6 +107,7 @@ def make_agent_tools(
     base_ref: int,
     *,
     doc_ids: tuple[str, ...] | None = None,
+    product_map: dict[str, str] | None = None,
 ):
     """按请求构建工具；编号在预检索片段之后顺延。
 
@@ -113,7 +127,7 @@ def make_agent_tools(
             logger.warning("知识库工具检索失败: %s", e)
             writer(_tool_error("knowledge_search", e))
             return f"知识库检索失败：{e}"
-        items = _kb_items(ctx, hits)
+        items = _kb_items(ctx, hits, product_map)
         numbered = number(items, counter)
         writer(
             _tool_end(

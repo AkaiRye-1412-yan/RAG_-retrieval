@@ -3,16 +3,19 @@
 对应业务规则：
 1. 问题里明确出现品牌（高创 / ACS / AGITO / AKRIBIS 等）→ 只检索该产品的文档，
    绝不混入其他产品内容。
-2. 指令类问题（如 PTP、MST、CDHD 参数等）→ 片段只保留“指令词精确命中”的候选；
-   若问题没点名品牌，则按命中片段的得分选出主导产品并锁定，首轮回答不出现其他产品的相似功能。
-3. 同一会话中再次追问同一问题 → 解除产品锁定，允许补充/对比其他产品。
+2. 问题没有点名品牌（模糊提问，如“如何回零”“报警怎么清”）→ **跨产品全覆盖检索**：
+   按产品线分别检索并分组，把所有相关产品的资料都交给模型，由模型按产品分节、
+   对比作答。不再锁定“主导产品”，避免只答一家。
+3. 指令类问题（如 PTP、MST、CDHD 参数等）→ 每个产品范围内只保留“指令词精确命中”
+   的候选；某产品没有精确命中时回退该产品的语义结果。
+4. 模糊提问额外做轻量同义词扩展（回零/回原点/Homing…），提升多维度召回。
 
 产品目录（`PRODUCTS`）按文件名 + 片段正文采样做归类；新增品牌只需在此追加一项。
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
 
 if TYPE_CHECKING:
@@ -184,6 +187,55 @@ _OTHERS_RE = re.compile(
     r"其他产品|其他品牌|其它产品|其它品牌|别的品牌|别家|其他厂家|其他型号|其他系列"
 )
 
+# 常见功能词的同义/英文表达：模糊提问时追加检索，避免“回零 / 回原点 / Homing”
+# 在不同厂商手册里写法不同导致漏召回。只做轻量扩展（每词最多 2 个变体）。
+_TERM_VARIANTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("回零", "回原点", "寻零", "找零"),
+        ("回原点", "原点回归", "homing", "home"),
+    ),
+    (
+        ("使能", "上电"),
+        ("伺服使能", "servo on", "enable"),
+    ),
+    (
+        ("报警", "故障", "报错"),
+        ("报警", "故障", "alarm", "错误码"),
+    ),
+    (
+        ("点动", "手动移动"),
+        ("点动", "jog", "手动运行"),
+    ),
+    (
+        ("限位",),
+        ("限位", "正限位", "负限位", "limit"),
+    ),
+    (
+        ("急停",),
+        ("急停", "emergency stop", "estop"),
+    ),
+    (
+        ("增益", "调参", "整定"),
+        ("增益", "gain", "pid", "参数整定"),
+    ),
+)
+_MAX_QUERY_VARIANTS = 2   # 控制额外嵌入调用次数（套餐端点限流约 6 次/分钟）
+
+
+def query_variants(query: str) -> tuple[str, ...]:
+    """模糊提问 → 追加的同义词检索语句（去掉原问题里已有的词）。"""
+    text = query or ""
+    low = text.lower()
+    extras: list[str] = []
+    for triggers, variants in _TERM_VARIANTS:
+        if not any(t in text for t in triggers):
+            continue
+        for v in variants:
+            if v.lower() in low or v in extras:
+                continue
+            extras.append(v)
+    return tuple(extras[:_MAX_QUERY_VARIANTS])
+
 
 def detect_product_keys(text: str) -> list[str]:
     """识别文本中明确提到的产品；强别名优先于型号前缀，按匹配强度排序。"""
@@ -277,12 +329,13 @@ def _is_repeat_question(tokens: Iterable[str], previous_texts: list[str]) -> boo
 
 @dataclass(frozen=True)
 class Route:
-    products: tuple[str, ...] = ()          # 最终锁定的产品（explicit 或 implied）
-    source: str = "none"                    # explicit / implied / relaxed / none
+    products: tuple[str, ...] = ()          # 问题明确指定的产品（explicit）
+    source: str = "none"                    # explicit / multi / none
     tokens: tuple[str, ...] = ()            # 指令/命令词
     exact: bool = False                     # 片段是否已按指令词精确过滤
-    relaxed: bool = False                   # 再次追问 → 允许跨产品
+    relaxed: bool = False                   # 用户明确要求看其他产品
     doc_ids: tuple[str, ...] | None = None  # None=不限制；空元组=限定但无文档
+    searched: tuple[str, ...] = ()          # 模糊提问时实际参与检索的产品线
     note: str = ""
 
     @property
@@ -290,8 +343,17 @@ class Route:
         return product_labels(self.products)
 
     @property
+    def searched_labels(self) -> list[str]:
+        return product_labels(self.searched)
+
+    @property
     def scoped(self) -> bool:
         return self.doc_ids is not None
+
+    @property
+    def multi(self) -> bool:
+        """模糊提问：跨产品全覆盖检索，不再锁定单一主导产品。"""
+        return self.source == "multi"
 
 
 def docs_for_products(
@@ -299,6 +361,50 @@ def docs_for_products(
 ) -> list[str]:
     want = set(keys)
     return [doc_id for doc_id, product in product_map.items() if product in want]
+
+
+def grouped_docs(
+    product_map: dict[str, str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """按产品目录顺序，返回知识库中实际有文档的产品及其 doc_ids。"""
+    groups: list[tuple[str, tuple[str, ...]]] = []
+    for p in PRODUCTS:
+        ids = docs_for_products((p.key,), product_map)
+        if ids:
+            groups.append((p.key, tuple(ids)))
+    return tuple(groups)
+
+
+def unclassified_docs(product_map: dict[str, str]) -> tuple[str, ...]:
+    """未能归入任何产品的文档（文件名/正文都看不出品牌）。"""
+    return tuple(doc_id for doc_id, key in product_map.items() if not key)
+
+
+def retrieval_scopes(
+    product_map: dict[str, str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """跨产品检索范围：先各产品线，再未归类文档（tag 为空串，最后合并）。"""
+    scopes: list[tuple[str, tuple[str, ...]]] = list(grouped_docs(product_map))
+    others = unclassified_docs(product_map)
+    if others:
+        scopes.append(("", others))
+    return tuple(scopes)
+
+
+def product_scopes(
+    keys: Iterable[str],
+    product_map: dict[str, str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """只对问题点名的多个产品做分产品检索（对比类问题也要逐产品配额）。"""
+    want = set(keys)
+    scopes: list[tuple[str, tuple[str, ...]]] = []
+    for p in PRODUCTS:
+        if p.key not in want:
+            continue
+        ids = docs_for_products((p.key,), product_map)
+        if ids:
+            scopes.append((p.key, tuple(ids)))
+    return tuple(scopes)
 
 
 def analyze_query(
@@ -328,38 +434,13 @@ def analyze_query(
             note="问题明确指定了产品",
         )
 
+    # 未点名产品：模糊提问 → 全产品覆盖检索，不再挑选/锁定主导产品。
     return Route(
         products=(),
-        source="relaxed" if relaxed else "none",
+        source="multi",
         tokens=tokens,
         exact=False,
         relaxed=relaxed,
         doc_ids=None,
-        note="再次追问，允许跨产品" if relaxed else "",
-    )
-
-
-def dominant_product(hits: list[dict[str, Any]], product_map: dict[str, str]) -> str:
-    """在精确命中的片段里选主导产品（按累计相似度）。"""
-    agg: dict[str, float] = {}
-    for h in hits:
-        key = product_map.get(h.get("doc_id", ""), "")
-        if key:
-            agg[key] = agg.get(key, 0.0) + float(h.get("score") or 0.0)
-    if not agg:
-        return ""
-    return max(agg, key=agg.get)
-
-
-def lock_route(route: Route, product_key: str, product_map: dict[str, str]) -> Route:
-    if not product_key:
-        return route
-    doc_ids = docs_for_products((product_key,), product_map)
-    return replace(
-        route,
-        products=(product_key,),
-        source="implied",
-        doc_ids=tuple(doc_ids),
-        exact=True,
-        note="未点名产品，按精确命中的片段锁定",
+        note="问题未点名产品：跨产品全覆盖检索",
     )

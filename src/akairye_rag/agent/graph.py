@@ -29,14 +29,18 @@ class ChatState(MessagesState):
     query: str
     hits: list[dict[str, Any]]
     route: Any  # retrieval.router.Route
+    product_map: dict[str, str]
 
 
 def _route_event(route) -> dict[str, Any]:
     """给前端工具步骤追加的分流信息（不影响现有渲染，未知字段会被忽略）。"""
     extra: dict[str, Any] = {}
     if route is not None:
-        if route.labels:
-            extra["product"] = route.labels
+        labels = route.labels or route.searched_labels
+        if labels:
+            extra["product"] = labels
+        if route.multi:
+            extra["multi"] = True
         if route.tokens:
             extra["tokens"] = list(route.tokens)
         if route.scoped:
@@ -58,6 +62,7 @@ def build_chat_graph(ctx, s):
         hits: list[dict[str, Any]] = []
         err = None
         route = None
+        product_map: dict[str, str] = {}
         try:
             from akairye_rag.retrieval import router as routing
 
@@ -66,33 +71,64 @@ def build_chat_graph(ctx, s):
             previous = routing.previous_user_texts(state["messages"], query)
             route = routing.analyze_query(query, previous, product_map)
 
-            # 2) 再检索：明确产品 → 文档级硬过滤；指令问题 → 多取候选后精确筛选
-            limit = max(s.top_k, 24) if route.tokens else s.top_k
-            raw = await ctx.kb_search(
-                query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
-            )
-            if route.tokens:
-                matched = [
-                    h for h in raw
-                    if routing.content_has_any_token(h["content"], route.tokens)
-                ]
-                if matched:
-                    route = replace(route, exact=True)
-                    # 未点名产品时，用精确命中片段的主导产品锁定首轮范围，
-                    # 避免其他产品的同名指令混进第一次回答
-                    if not route.relaxed and not route.products:
-                        dominant = routing.dominant_product(matched, product_map)
-                        if dominant:
-                            route = routing.lock_route(route, dominant, product_map)
-                            matched = [
-                                h for h in matched
-                                if product_map.get(h["doc_id"]) == dominant
-                            ]
-                    raw = matched
+            # 2) 再检索，分三条路径：
+            #    multi（模糊提问）→ 全部产品线分别检索并合并；
+            #    明确点名多个产品 → 只对这些产品分别检索并合并（对比类问题也要全覆盖）；
+            #    明确点名单个产品 → 文档级硬过滤，只用该产品资料。
+            scopes: tuple[tuple[str, tuple[str, ...]], ...] = ()
+            if route.multi:
+                scopes = routing.retrieval_scopes(product_map)
+            elif len(route.products) > 1:
+                scopes = routing.product_scopes(route.products, product_map)
+
+            if route.multi or len(route.products) > 1:
+                if len(scopes) > 1:
+                    raw = await ctx.kb_search_multi(
+                        query,
+                        s,
+                        scopes,
+                        exact_tokens=route.tokens,
+                        # 同义词扩展只用于模糊提问；点名产品时按用户原话检索
+                        variants=(
+                            routing.query_variants(query)
+                            if route.multi and not route.tokens
+                            else ()
+                        ),
+                    )
                 else:
-                    route = replace(route, exact=False)
-            raw = raw[: s.top_k]
-            hits = await asyncio.to_thread(_kb_items, ctx, raw)
+                    # 知识库无法按产品归类（或只有一类）：退化为普通检索
+                    limit = max(s.top_k, 24) if route.tokens else s.top_k
+                    raw = await ctx.kb_search(
+                        query,
+                        s,
+                        doc_ids=route.doc_ids,
+                        exact_tokens=route.tokens,
+                        limit=limit,
+                    )
+                route = replace(
+                    route,
+                    searched=tuple(k for k, _ in scopes),
+                    exact=bool(route.tokens)
+                    and any(
+                        routing.content_has_any_token(h["content"], route.tokens)
+                        for h in raw
+                    ),
+                )
+            else:
+                limit = max(s.top_k, 24) if route.tokens else s.top_k
+                raw = await ctx.kb_search(
+                    query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
+                )
+                if route.tokens:
+                    matched = [
+                        h for h in raw
+                        if routing.content_has_any_token(h["content"], route.tokens)
+                    ]
+                    route = replace(route, exact=bool(matched))
+                    if matched:
+                        raw = matched
+                raw = raw[: s.top_k]
+            hits = await asyncio.to_thread(_kb_items, ctx, raw, product_map)
         except Exception as e:
             err = str(e)[:EVENT_ERROR_MAX]
             logger.warning("预检索失败: %s", e)
@@ -104,7 +140,7 @@ def build_chat_graph(ctx, s):
                 extra=_route_event(route),
             )
         )
-        return {"hits": hits, "route": route}
+        return {"hits": hits, "route": route, "product_map": product_map}
 
     async def generate_direct(state: ChatState):
         """off 模式：纯 RAG 链，不绑工具，按资料说话。"""
@@ -134,6 +170,7 @@ def build_chat_graph(ctx, s):
         tools = make_agent_tools(
             ctx, s, base_ref=len(state["hits"]),
             doc_ids=route.doc_ids if route is not None else None,
+            product_map=state.get("product_map") or None,
         )
         system_text = build_system_prompt(
             state["hits"], tool_mode=mode, tavily_usable=tavily_ok, route=route

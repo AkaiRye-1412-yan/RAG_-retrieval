@@ -150,6 +150,12 @@ class SQLiteVectorStore(VectorStore):
         self._embed(texts, batch_size=batch_size, on_batch=persist)
         return len(fragments)
 
+    def embed_query(self, query: str) -> np.ndarray:
+        """查询向量（已 L2 归一化）；多路检索时先算一次再传给 search，避免重复请求嵌入接口。"""
+        emb = self.embeddings
+        qraw = self._call_with_rate_guard(lambda: emb.embed_query(query))
+        return _l2_normalize(np.asarray(qraw, dtype=np.float32))
+
     def search(
         self,
         query: str,
@@ -157,11 +163,10 @@ class SQLiteVectorStore(VectorStore):
         k: int = 6,
         threshold: float | None = None,
         filter: dict | None = None,
+        query_vec: np.ndarray | None = None,
     ) -> list[dict[str, Any]]:
         """返回 [{id, doc_id, seq, content, locator, score}]，按相关度降序，已按阈值过滤。"""
-        emb = self.embeddings
-        qraw = self._call_with_rate_guard(lambda: emb.embed_query(query))
-        qvec = _l2_normalize(np.asarray(qraw, dtype=np.float32))
+        qvec = query_vec if query_vec is not None else self.embed_query(query)
         cond = filter or {}
         doc_filter = cond.get("doc_id")
         # doc_ids：产品分流后限定在一批文档内检索（None=不限制；空集合=无可用文档）

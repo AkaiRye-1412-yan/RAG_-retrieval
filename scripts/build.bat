@@ -1,11 +1,21 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0.."
+
+set "OUTDIR=dist\AkaiRyeRAG"
+set "KEEPDIR=dist\.akairye_userdata"
 
 echo ============================================================
 echo  AkaiRye RAG - build (frontend -^> uv sync -^> PyInstaller)
 echo ============================================================
 echo.
+
+echo [!] Please close AkaiRyeRAG.exe before building.
+echo     PyInstaller --noconfirm deletes the whole output folder,
+echo     so .env and data\ are moved aside and restored automatically.
+echo.
+
+call :protect_userdata
 
 echo [1/3] Building frontend (Vue3 + Vite)...
 pushd frontend
@@ -25,10 +35,15 @@ echo [3/3] Packaging with PyInstaller (onedir)...
 call uv run pyinstaller akairye.spec --noconfirm --clean
 if errorlevel 1 goto err
 
+call :restore_userdata
+
 echo.
 echo ============================================================
 echo  Done: dist\AkaiRyeRAG\AkaiRyeRAG.exe
-echo  First run creates .env and data\ next to the exe.
+echo  User data (.env + data\) has been restored next to the exe.
+echo.
+echo  For sharing with others, run scripts\export.bat to produce
+echo  dist\AkaiRyeRAG_export WITHOUT .env or data\ (no API keys).
 echo ============================================================
 pause
 exit /b 0
@@ -36,5 +51,40 @@ exit /b 0
 :err
 echo.
 echo [ERROR] Build failed. See the log above.
+call :restore_userdata
 pause
 exit /b 1
+
+rem ---- Protect .env and data\ from PyInstaller's output-dir wipe ----
+:protect_userdata
+if not exist "%OUTDIR%" exit /b 0
+if not exist "%KEEPDIR%" mkdir "%KEEPDIR%"
+if exist "%OUTDIR%\.env" (
+  move /Y "%OUTDIR%\.env" "%KEEPDIR%\.env" >nul
+  echo   [keep] .env moved to %KEEPDIR%
+)
+if exist "%OUTDIR%\data" (
+  if exist "%KEEPDIR%\data" rmdir /S /Q "%KEEPDIR%\data"
+  move /Y "%OUTDIR%\data" "%KEEPDIR%\data" >nul
+  echo   [keep] data\ moved to %KEEPDIR%
+)
+exit /b 0
+
+:restore_userdata
+if not exist "%KEEPDIR%" exit /b 0
+if not exist "%OUTDIR%" mkdir "%OUTDIR%"
+if exist "%KEEPDIR%\.env" (
+  move /Y "%KEEPDIR%\.env" "%OUTDIR%\.env" >nul
+  echo   [restore] .env
+)
+if exist "%KEEPDIR%\data" (
+  if exist "%OUTDIR%\data" rmdir /S /Q "%OUTDIR%\data"
+  move /Y "%KEEPDIR%\data" "%OUTDIR%\data" >nul
+  echo   [restore] data\
+)
+rmdir "%KEEPDIR%" 2>nul
+if exist "%KEEPDIR%" (
+  echo   [WARN] Could not restore everything from %KEEPDIR%
+  echo          Make sure AkaiRyeRAG.exe is closed, then move the folder back manually.
+)
+exit /b 0

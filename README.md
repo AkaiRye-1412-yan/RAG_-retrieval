@@ -8,7 +8,7 @@
 - 答案为 Claude 风格 Markdown 渲染（代码高亮、表格、引用、复制按钮）
 - 所有密钥与参数放在 exe 同目录的 **`.env`**（不打包），可在系统设置页热修改、随时切换模型
 - 自研 SQLite 向量存储（float32 + numpy 余弦），无 Chroma 重依赖，单文件备份，断网可用
-- **多产品检索分流**：问题明确提到 ACS / AGITO / 高创 / AKRIBIS 等品牌时只检索该产品资料；指令类问题（PTP、0x607A…）优先精确命中，未点名品牌时首轮锁定主导产品，再次追问才展开其他产品对比（产品目录见 `src/akairye_rag/retrieval/router.py` 的 `PRODUCTS`）
+- **多产品检索分流**：问题明确提到 ACS / AGITO / 高创 / AKRIBIS 等品牌时只检索该产品资料；**未点名品牌（提问较模糊，如「如何回零」）时按产品线分别检索并全部合并**，同一个功能（回零、报警、使能…）会把所有产品的资料都交给模型，按产品分节并附对比表作答；指令类问题（PTP、0x607A…）在每个产品范围内优先精确命中（产品目录见 `src/akairye_rag/retrieval/router.py` 的 `PRODUCTS`）
 
 > 📖 **完整架构设计**（模块划分 / 数据模型 / 核心流程 / SSE 协议 / 安全与打包）：见 [docs/架构设计.md](docs/架构设计.md)
 
@@ -45,6 +45,7 @@ scripts\dev.bat
 | 变量 | 说明 |
 |---|---|
 | `ARK_API_KEY` / `ARK_BASE_URL` / `ARK_MODEL` | 火山方舟对话模型（OpenAI 兼容），模型 ID 或 `ep-` 接入点 |
+| `MAX_TOKENS` | 单次回答输出上限；跨产品分节回答建议保持 8192，过小会导致回答被截断 |
 | `EMBEDDING_*` | 向量模型；KEY/BASE_URL 留空则回退到 ARK 配置。换模型/维度后需在「向量库」页**重建索引** |
 | `TAVILY_API_KEY` | 联网搜索；配置 Key 即可用，未命中时是否联网由 `TOOL_MODE` 决定 |
 | `TOOL_MODE` | `auto` 知识库优先、模型自决联网；`on` 强制使用工具；`off` 仅用知识库 |
@@ -68,6 +69,27 @@ scripts\build.bat
 
 产物：`dist/AkaiRyeRAG/AkaiRyeRAG.exe`（整个文件夹拷走即用；`.env` 不在包内，首启自动生成）。
 运行环境需要 Microsoft Edge WebView2 Runtime（Win11 自带，Win10 一般已预装）。
+
+> ⚠️ **重新打包前请先退出 AkaiRyeRAG.exe**。PyInstaller 的 `--noconfirm` 会删除并重建整个
+> `dist/AkaiRyeRAG` 目录；`build.bat` 已自动把该目录下已有的 `.env` 与 `data/` 临时移到
+> `dist/.akairye_userdata`，构建成功或失败后都会移回。若构建时程序仍在运行，移动可能失败，
+> 数据会留在 `dist/.akairye_userdata`，关闭程序后手动移回即可。
+> 更稳妥的日常备份：退出程序后复制 `data/akairye.db` 一个文件（会话、文档、向量都在其中）。
+
+### 分发给其他人：生成不含密钥与数据的干净包
+
+**不要把带 `.env` / `data/` 的 `dist/AkaiRyeRAG` 直接发给别人**——`.env` 里有你的 API Key，
+`data/` 里有你的会话和知识库。构建完成后执行：
+
+```bash
+scripts\export.bat
+```
+
+产物为 `dist/AkaiRyeRAG_export/`，只含 `AkaiRyeRAG.exe` 与 `_internal\`，**不包含**
+`.env`、`data/`、日志。对方首次运行时会自动生成空的 `.env` 和 `data/`，自行填写 Key 即可。
+
+> 本机自用 → 直接用 `dist/AkaiRyeRAG`（`build.bat` 已把数据还回这里）；
+> 发给他人 → 只发 `dist/AkaiRyeRAG_export`。
 
 ## 数据与备份
 

@@ -20,7 +20,8 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 # 模型 ID（如 doubao-seed-... ）或在线推理接入点 ID（ep- 开头）
 ARK_MODEL=doubao-seed-1-6-250615
 TEMPERATURE=0.7
-MAX_TOKENS=4096
+# 跨产品回答（分产品小节 + 对比表）较长，建议 8192
+MAX_TOKENS=8192
 # 推理强度：low=缩短模型“思考”阶段，首字更快（推荐）；medium/high=更慢更细；留空=不发送该参数
 # 若切换的模型不支持该参数并报 InvalidParameter，请把本项留空
 REASONING_EFFORT=low

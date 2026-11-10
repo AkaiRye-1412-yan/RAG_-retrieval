@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_model: str = "doubao-seed-1-6-250615"
     temperature: float = 0.7
-    max_tokens: int = 4096
+    # 跨产品回答（高创/ACS/AGITO 分节 + 对比表）通常较长，默认给足输出预算
+    max_tokens: int = 8192
     # 推理强度：low 可显著缩短“思考”阶段（首字从数十秒降到 1~3 秒）；
     # 留空则不发送该参数（个别模型不支持时会报 InvalidParameter）。
     reasoning_effort: str = "low"
