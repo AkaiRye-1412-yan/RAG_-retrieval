@@ -108,11 +108,13 @@ def make_agent_tools(
     *,
     doc_ids: tuple[str, ...] | None = None,
     product_map: dict[str, str] | None = None,
+    allow_web: bool = True,
 ):
     """按请求构建工具；编号在预检索片段之后顺延。
 
     doc_ids：产品分流锁定的文档范围，工具二次检索必须沿用，避免模型自己
     绕回全库把其他产品的内容捞进来。
+    allow_web：会话已锁定产品范围时关闭联网（联网结果无法按产品过滤）。
     """
     counter = {"ref": base_ref}
 
@@ -169,6 +171,6 @@ def make_agent_tools(
         return format_tool_results(numbered, base_ref=counter["ref"] - len(numbered))
 
     tools = [knowledge_search]
-    if s.tavily_usable:
+    if allow_web and s.tavily_usable:
         tools.append(tavily_web_search)
     return tools

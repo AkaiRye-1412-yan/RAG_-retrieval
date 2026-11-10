@@ -63,6 +63,14 @@ ROUTE_EXPLICIT_MULTI = (
     "不要用其他产品的内容替代。\n"
 )
 
+ROUTE_CONTEXT = (
+    "本会话此前已明确产品范围为【{labels}】，本轮提问虽未点名，也沿用该范围：\n"
+    "- 只依据【{labels}】的知识库片段回答；本轮不要检索、不要提及、不要引用其他产品。\n"
+    "- 若【{labels}】资料不足，请如实说明该产品资料中未找到，不要用其他产品资料补答。\n"
+    "- 只有用户本轮明确提到其他产品（如「那高创呢」）时，才切换或扩展到对应产品。\n"
+    "- 【{labels}】包含多个产品时逐产品分节并给出对比；否则直接围绕该产品作答。\n"
+)
+
 ROUTE_MULTI = (
     "本轮问题【没有点名具体产品】，属于模糊提问，必须跨产品完整覆盖：\n"
     "- 片段已按产品线分别检索并合并（{labels}）；凡是有资料的产品都要单独成节"
@@ -100,8 +108,12 @@ def format_route(route: "Route | None") -> str:
     labels = "、".join(route.labels)
     parts: list[str] = []
     if route.products:
-        template = ROUTE_EXPLICIT_MULTI if len(route.products) > 1 else ROUTE_EXPLICIT
-        parts.append(template.format(labels=labels))
+        if route.context:
+            parts.append(ROUTE_CONTEXT.format(labels=labels))
+        elif len(route.products) > 1:
+            parts.append(ROUTE_EXPLICIT_MULTI.format(labels=labels))
+        else:
+            parts.append(ROUTE_EXPLICIT.format(labels=labels))
     elif route.multi:
         searched = "、".join(route.searched_labels) or "各产品线"
         parts.append(ROUTE_MULTI.format(labels=searched))

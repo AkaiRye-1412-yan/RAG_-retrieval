@@ -58,6 +58,11 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
 
     # 1) 用户消息落库 + 取上下文
     repos.add_message(db, payload.session_id, "user", payload.query)
+    # 会话产品范围用更长的用户消息窗口识别（不受 HISTORY_LIMIT 约束），
+    # 保证早期明确过的产品在后续多轮模糊追问中仍被沿用。
+    scope_texts = repos.recent_user_texts(db, payload.session_id, 40)
+    if scope_texts and scope_texts[-1].strip() == payload.query.strip():
+        scope_texts = scope_texts[:-1]
     history_rows = repos.recent_messages(db, payload.session_id, s.history_limit)
     history = [
         HumanMessage(content=row["content"])
@@ -123,7 +128,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
 
         try:
             aiter = graph.astream(
-                {"messages": history, "query": payload.query},
+                {"messages": history, "query": payload.query, "scope_texts": scope_texts},
                 stream_mode=["messages", "custom"],
             )
             while True:

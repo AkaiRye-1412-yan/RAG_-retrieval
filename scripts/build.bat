@@ -15,7 +15,17 @@ echo     PyInstaller --noconfirm deletes the whole output folder,
 echo     so .env and data\ are moved aside and restored automatically.
 echo.
 
+rem ---- Refuse to build while the packaged app holds the database open ----
+tasklist /FI "IMAGENAME eq AkaiRyeRAG.exe" 2>NUL | find /I "AkaiRyeRAG.exe" >NUL
+if not errorlevel 1 (
+  echo [ERROR] AkaiRyeRAG.exe is still running.
+  echo         Close it first, otherwise data\ cannot be moved aside and may be deleted.
+  pause
+  exit /b 1
+)
+
 call :protect_userdata
+if errorlevel 1 goto err
 
 echo [1/3] Building frontend (Vue3 + Vite)...
 pushd frontend
@@ -61,11 +71,20 @@ if not exist "%OUTDIR%" exit /b 0
 if not exist "%KEEPDIR%" mkdir "%KEEPDIR%"
 if exist "%OUTDIR%\.env" (
   move /Y "%OUTDIR%\.env" "%KEEPDIR%\.env" >nul
+  if not exist "%KEEPDIR%\.env" (
+    echo [ERROR] Could not move .env aside. Abort to protect user data.
+    exit /b 1
+  )
   echo   [keep] .env moved to %KEEPDIR%
 )
 if exist "%OUTDIR%\data" (
   if exist "%KEEPDIR%\data" rmdir /S /Q "%KEEPDIR%\data"
   move /Y "%OUTDIR%\data" "%KEEPDIR%\data" >nul
+  if not exist "%KEEPDIR%\data" (
+    echo [ERROR] Could not move data\ aside ^(files may be locked^).
+    echo         Aborting BEFORE PyInstaller so the knowledge base is not deleted.
+    exit /b 1
+  )
   echo   [keep] data\ moved to %KEEPDIR%
 )
 exit /b 0

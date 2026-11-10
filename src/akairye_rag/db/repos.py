@@ -165,6 +165,21 @@ def recent_messages(db: Database, session_id: str, limit: int) -> list[dict[str,
     return [_message_row(r) for r in reversed(rows)]
 
 
+def recent_user_texts(db: Database, session_id: str, limit: int = 40) -> list[str]:
+    """本会话最近的用户提问文本（旧→新），供检索分流识别会话级产品范围。
+
+    与 `recent_messages` 不同：只取 user 消息、且不受 HISTORY_LIMIT 限制，
+    保证「ACS 如何回零」这类早期明确产品在后续多轮追问后仍能被记住。
+    """
+    with db.lock:
+        rows = db.conn.execute(
+            "SELECT content FROM messages WHERE session_id=? AND role='user'"
+            " ORDER BY seq DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+    return [r["content"] for r in reversed(rows)]
+
+
 # ---------------- documents ----------------
 
 def create_document(

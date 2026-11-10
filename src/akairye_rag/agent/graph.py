@@ -30,6 +30,7 @@ class ChatState(MessagesState):
     hits: list[dict[str, Any]]
     route: Any  # retrieval.router.Route
     product_map: dict[str, str]
+    scope_texts: list[str]  # 本会话用户提问文本（不受 HISTORY_LIMIT 限制，用于会话产品范围）
 
 
 def _route_event(route) -> dict[str, Any]:
@@ -45,6 +46,8 @@ def _route_event(route) -> dict[str, Any]:
             extra["tokens"] = list(route.tokens)
         if route.scoped:
             extra["scoped"] = True
+        if route.context:
+            extra["context"] = True
     return extra
 
 
@@ -68,13 +71,20 @@ def build_chat_graph(ctx, s):
 
             # 1) 先分层：识别产品 / 指令词 / 是否再次追问
             product_map = await asyncio.to_thread(routing.document_product_map, ctx)
-            previous = routing.previous_user_texts(state["messages"], query)
+            # 会话产品范围用完整（截断 40 条）的用户消息识别，不受 HISTORY_LIMIT 限制
+            previous = state.get("scope_texts") or routing.previous_user_texts(
+                state["messages"], query
+            )
             route = routing.analyze_query(query, previous, product_map)
+            # 沿用会话产品范围的模糊追问多取一些片段，保证在该产品内回答完整
+            limit = max(s.top_k, 24) if route.tokens else (
+                max(s.top_k, 10) if route.context else s.top_k
+            )
 
             # 2) 再检索，分三条路径：
-            #    multi（模糊提问）→ 全部产品线分别检索并合并；
-            #    明确点名多个产品 → 只对这些产品分别检索并合并（对比类问题也要全覆盖）；
-            #    明确点名单个产品 → 文档级硬过滤，只用该产品资料。
+            #    multi（本会话首次模糊提问）→ 全部产品线分别检索并合并；
+            #    点名/会话锁定的多个产品 → 只对这些产品分别检索并合并（对比类问题也要全覆盖）；
+            #    点名/会话锁定的单个产品 → 文档级硬过滤，只用该产品资料。
             scopes: tuple[tuple[str, tuple[str, ...]], ...] = ()
             if route.multi:
                 scopes = routing.retrieval_scopes(product_map)
@@ -97,7 +107,6 @@ def build_chat_graph(ctx, s):
                     )
                 else:
                     # 知识库无法按产品归类（或只有一类）：退化为普通检索
-                    limit = max(s.top_k, 24) if route.tokens else s.top_k
                     raw = await ctx.kb_search(
                         query,
                         s,
@@ -115,7 +124,6 @@ def build_chat_graph(ctx, s):
                     ),
                 )
             else:
-                limit = max(s.top_k, 24) if route.tokens else s.top_k
                 raw = await ctx.kb_search(
                     query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
                 )
@@ -154,8 +162,8 @@ def build_chat_graph(ctx, s):
 
     async def agent_node(state: ChatState):
         route = state.get("route")
-        # 明确点名（或已锁定）产品时，业务规则要求只用该产品知识库作答。
-        # 此时直接基于预检索片段生成：不给模型联网/二次检索工具，
+        # 明确点名产品、或本轮沿用会话已确定的产品范围时，业务规则要求只用该产品知识库作答。
+        # auto 模式下直接基于预检索片段生成：不给模型联网/二次检索工具，
         # 既避免混入其他产品内容，也省掉 2~3 轮模型往返与联网等待。
         if mode == "auto" and route is not None and route.products:
             system = build_system_prompt(
@@ -166,14 +174,18 @@ def build_chat_graph(ctx, s):
             )
             return {"messages": [ai]}
 
+        # 会话已锁定产品时禁用联网工具：联网结果无法按产品过滤，可能带回其他产品内容。
+        session_locked = route is not None and route.context
+        tavily_for_prompt = tavily_ok and not session_locked
         # 工具二次检索沿用产品范围，防止模型自己绕回全库
         tools = make_agent_tools(
             ctx, s, base_ref=len(state["hits"]),
             doc_ids=route.doc_ids if route is not None else None,
             product_map=state.get("product_map") or None,
+            allow_web=not session_locked,
         )
         system_text = build_system_prompt(
-            state["hits"], tool_mode=mode, tavily_usable=tavily_ok, route=route
+            state["hits"], tool_mode=mode, tavily_usable=tavily_for_prompt, route=route
         )
         messages: list = [SystemMessage(content=system_text), *state["messages"]]
 

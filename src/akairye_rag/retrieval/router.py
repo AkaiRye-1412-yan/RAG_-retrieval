@@ -3,12 +3,15 @@
 对应业务规则：
 1. 问题里明确出现品牌（高创 / ACS / AGITO / AKRIBIS 等）→ 只检索该产品的文档，
    绝不混入其他产品内容。
-2. 问题没有点名品牌（模糊提问，如“如何回零”“报警怎么清”）→ **跨产品全覆盖检索**：
-   按产品线分别检索并分组，把所有相关产品的资料都交给模型，由模型按产品分节、
-   对比作答。不再锁定“主导产品”，避免只答一家。
-3. 指令类问题（如 PTP、MST、CDHD 参数等）→ 每个产品范围内只保留“指令词精确命中”
+2. **会话产品上下文**：同一会话里用户此前已明确点过产品（如先问“ACS 如何回零”），
+   之后的模糊追问（如“具体步骤呢”）只在该产品范围内检索作答，不跨产品；
+   只有当前问题重新点名其他产品（如“那高创呢”）或明确要求“其他产品”，才切换范围。
+3. 问题没有点名品牌、且会话里也从未确定过产品（首次模糊提问，如“如何回零”）
+   → **跨产品全覆盖检索**：按产品线分别检索并分组，把所有相关产品的资料都交给模型，
+   由模型按产品分节、对比作答。
+4. 指令类问题（如 PTP、MST、CDHD 参数等）→ 每个产品范围内只保留“指令词精确命中”
    的候选；某产品没有精确命中时回退该产品的语义结果。
-4. 模糊提问额外做轻量同义词扩展（回零/回原点/Homing…），提升多维度召回。
+5. 模糊提问额外做轻量同义词扩展（回零/回原点/Homing…），提升多维度召回。
 
 产品目录（`PRODUCTS`）按文件名 + 片段正文采样做归类；新增品牌只需在此追加一项。
 """
@@ -185,6 +188,7 @@ _COMMON_WORDS = {
 }
 _OTHERS_RE = re.compile(
     r"其他产品|其他品牌|其它产品|其它品牌|别的品牌|别家|其他厂家|其他型号|其他系列"
+    r"|所有产品|全部产品|各家产品|全部品牌|各家品牌"
 )
 
 # 常见功能词的同义/英文表达：模糊提问时追加检索，避免“回零 / 回原点 / Homing”
@@ -314,6 +318,23 @@ def previous_user_texts(messages: list[Any], query: str) -> list[str]:
     return users[-6:]
 
 
+def session_products(previous_texts: list[str]) -> list[str]:
+    """会话产品上下文：从本会话的历史用户消息里，取最近一次的产品范围表态。
+
+    倒序扫描（previous_texts 按时间从旧到新）：
+    - 最近一条明确“点名品牌/型号”的消息 → 返回这些 key（可能多个，表示此前在做对比）；
+    - 最近一条明确要求“其他/全部产品”的消息 → 返回空列表（会话范围已解除）；
+    - 都没提到 → 空列表（会话尚未确定产品，走跨产品覆盖）。
+    """
+    for text in reversed(previous_texts or []):
+        if _OTHERS_RE.search(text or ""):
+            return []
+        keys = detect_product_keys(text)
+        if keys:
+            return keys
+    return []
+
+
 def _is_repeat_question(tokens: Iterable[str], previous_texts: list[str]) -> bool:
     tokens = tuple(tokens)
     if not tokens or not previous_texts:
@@ -329,8 +350,8 @@ def _is_repeat_question(tokens: Iterable[str], previous_texts: list[str]) -> boo
 
 @dataclass(frozen=True)
 class Route:
-    products: tuple[str, ...] = ()          # 问题明确指定的产品（explicit）
-    source: str = "none"                    # explicit / multi / none
+    products: tuple[str, ...] = ()          # 问题明确指定的产品（explicit / context）
+    source: str = "none"                    # explicit / context / multi / none
     tokens: tuple[str, ...] = ()            # 指令/命令词
     exact: bool = False                     # 片段是否已按指令词精确过滤
     relaxed: bool = False                   # 用户明确要求看其他产品
@@ -352,8 +373,13 @@ class Route:
 
     @property
     def multi(self) -> bool:
-        """模糊提问：跨产品全覆盖检索，不再锁定单一主导产品。"""
+        """本会话首次模糊提问：跨产品全覆盖检索，不锁定单一主导产品。"""
         return self.source == "multi"
+
+    @property
+    def context(self) -> bool:
+        """本轮未点名产品，但沿用了本会话此前确定的产品范围。"""
+        return self.source == "context"
 
 
 def docs_for_products(
@@ -412,16 +438,24 @@ def analyze_query(
     previous_texts: list[str],
     product_map: dict[str, str],
 ) -> Route:
-    """问题 → 路由决策（检索前调用；不发起任何模型请求）。"""
+    """问题 → 路由决策（检索前调用；不发起任何模型请求）。
+
+    优先级：
+    1. 当前问题点名产品 → explicit（同时刷新会话产品范围）；
+    2. 当前问题明确要求“其他产品/全部产品” → 解除范围，走 multi；
+    3. 当前问题模糊，但本会话此前点过产品 → context，只在该产品范围内检索；
+    4. 本会话从未确定过产品（首次模糊提问）→ multi，全产品覆盖。
+    """
     explicit = detect_product_keys(query)
     tokens = extract_instruction_tokens(query)
     wants_others = bool(_OTHERS_RE.search(query or ""))
     relaxed = _is_repeat_question(tokens, previous_texts or []) or wants_others
 
+    # 用户本轮明确要求看其他/全部产品：既解除当前问题里的产品指向，也不沿用会话范围
     if wants_others:
-        # 用户明确要求看其他产品：解除品牌范围限制
         explicit = []
 
+    # 1) 当前问题点名产品：本轮以当前问题为准，同时成为新的会话范围。
     if explicit:
         doc_ids = docs_for_products(explicit, product_map)
         return Route(
@@ -434,7 +468,21 @@ def analyze_query(
             note="问题明确指定了产品",
         )
 
-    # 未点名产品：模糊提问 → 全产品覆盖检索，不再挑选/锁定主导产品。
+    # 2) 本轮模糊，但本会话此前明确过产品 → 沿用该产品范围，只检索该产品资料。
+    context = [] if wants_others else session_products(previous_texts)
+    if context:
+        doc_ids = docs_for_products(context, product_map)
+        return Route(
+            products=tuple(context),
+            source="context",
+            tokens=tokens,
+            exact=False,
+            relaxed=relaxed,
+            doc_ids=tuple(doc_ids),
+            note="问题未点名产品：沿用本会话已确定的产品范围",
+        )
+
+    # 3) 本会话首次模糊提问（从未点过产品）→ 全产品覆盖检索。
     return Route(
         products=(),
         source="multi",
