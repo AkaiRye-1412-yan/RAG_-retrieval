@@ -153,6 +153,11 @@ def build_system_prompt(
     if route and route.products and not hits:
         # 已锁定某产品但该产品没有资料：不能说“知识库没有”，更不能拿别家资料顶替
         instr = ROUTE_SCOPE_MISS.format(labels=scoped_labels)
+        if tool_mode != "off":
+            instr += (
+                "（可在该产品范围内换关键词再调用一次 knowledge_search 复核；"
+                "仍不得检索、引用其他产品。）\n"
+            )
         if tool_mode != "off" and tavily_usable:
             instr += "（如调用 tavily_web_search，也只能围绕该产品检索，不能用其他产品替代。）\n"
     else:

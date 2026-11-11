@@ -210,7 +210,11 @@ async function commitEdit() {
             <div v-if="m.role === 'user'" class="user-text">{{ m.content || '' }}</div>
             <MarkdownView v-else :content="m.content || ''" />
             <span v-if="m.streaming && !m.tool_steps?.some((x) => x.status === 'running')" class="cursor"></span>
-            <SourceChips v-if="m.sources && m.sources.length" :items="m.sources" />
+            <SourceChips
+              v-if="m.sources && m.sources.length"
+              :items="m.sources"
+              :content="m.content || ''"
+            />
           </div>
         </div>
 

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 80
     history_limit: int = 12
+    # 混合检索：向量 + SQLite FTS5 关键词（指令/型号/参数召回），RRF 融合
+    hybrid_search: bool = True
+    query_decompose: bool = True    # 多主题问题拆子查询补充关键词召回
+    neighbor_expand: bool = True    # 命中片段附带前后相邻块，避免操作步骤被切分截断
+    multi_max_total: int = 24       # 跨产品检索的总片段上限（产品变多时自动下调单产品配额）
 
     # OCR
     ocr_enabled: bool = True
@@ -201,6 +206,10 @@ class SettingsStore:
             "chunk_size": s.chunk_size,
             "chunk_overlap": s.chunk_overlap,
             "history_limit": s.history_limit,
+            "hybrid_search": s.hybrid_search,
+            "query_decompose": s.query_decompose,
+            "neighbor_expand": s.neighbor_expand,
+            "multi_max_total": s.multi_max_total,
             "ocr_enabled": s.ocr_enabled,
             "ocr_dpi": s.ocr_dpi,
             "data_dir": s.data_dir,

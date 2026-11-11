@@ -13,17 +13,29 @@
    的候选；某产品没有精确命中时回退该产品的语义结果。
 5. 模糊提问额外做轻量同义词扩展（回零/回原点/Homing…），提升多维度召回。
 
-产品目录（`PRODUCTS`）按文件名 + 片段正文采样做归类；新增品牌只需在此追加一项。
+产品目录按文件名 + 片段正文采样做归类。内置目录见下方 `PRODUCTS`；
+新增品牌建议在 `data/product_catalog.json`（或 `PRODUCT_CATALOG` 指定的文件）的
+`products` 数组里追加一项，同名 key 覆盖内置项、新 key 追加；修改后无需重启，
+下一轮问答自动生效。
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
+
+from akairye_rag.core import paths
 
 if TYPE_CHECKING:
     from akairye_rag.core.app_context import AppContext
     from akairye_rag.core.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 产品目录
@@ -67,7 +79,135 @@ PRODUCTS: tuple[Product, ...] = (
     ),
 )
 
-_PRODUCT_BY_KEY = {p.key: p for p in PRODUCTS}
+_PRODUCTS_LOCK = threading.RLock()
+_PRODUCTS_CACHE: tuple[Product, ...] = PRODUCTS
+_PRODUCTS_SIG: tuple[str, float, int] = ("", 0.0, 0)
+
+
+def _catalog_candidates() -> list[Path]:
+    """候选目录文件：PRODUCT_CATALOG > DATA_DIR/data > 程序目录/data > 打包资源。"""
+    out: list[Path] = []
+    env_path = os.environ.get("PRODUCT_CATALOG", "").strip()
+    if env_path:
+        p = Path(env_path).expanduser()
+        out.append(p if p.is_absolute() else paths.APP_DIR / p)
+    out.append(paths.data_dir(os.environ.get("DATA_DIR", "")) / "product_catalog.json")
+    out.append(paths.APP_DIR / "data" / "product_catalog.json")
+    if paths.RES_DIR != paths.APP_DIR:
+        out.append(paths.RES_DIR / "data" / "product_catalog.json")
+    return out
+
+
+def _catalog_path() -> Path | None:
+    for p in _catalog_candidates():
+        try:
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def _str_tuple(item: dict[str, Any], key: str) -> tuple[str, ...]:
+    vals = item.get(key) or []
+    if isinstance(vals, str):
+        vals = [vals]
+    if not isinstance(vals, list):
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in vals:
+        s = str(v).strip()
+        if not s or s.lower() in seen:
+            continue
+        seen.add(s.lower())
+        out.append(s)
+    return tuple(out)
+
+
+def _product_from_json(item: dict[str, Any]) -> Product | None:
+    key = str(item.get("key") or "").strip().lower()
+    if not key:
+        return None
+    label = str(item.get("label") or key).strip() or key
+    aliases = _str_tuple(item, "aliases") + _str_tuple(item, "english")
+    # aliases / english 可能重复，合并后再去重
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for a in aliases:
+        if a.lower() in seen:
+            continue
+        seen.add(a.lower())
+        dedup.append(a)
+    return Product(
+        key=key,
+        label=label,
+        aliases=tuple(dedup),
+        model_prefixes=_str_tuple(item, "model_prefixes"),
+    )
+
+
+def _load_catalog(path: Path) -> list[Product] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("产品目录读取失败（%s），继续使用内置目录：%s", path, e)
+        return None
+    items = data.get("products") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        logger.warning("产品目录格式不正确（缺少 products 数组）：%s", path)
+        return None
+    loaded = [_product_from_json(it) for it in items if isinstance(it, dict)]
+    return [p for p in loaded if p is not None]
+
+
+def products() -> tuple[Product, ...]:
+    """当前产品目录：内置 + 外部 JSON（同名覆盖、新 key 追加）。
+
+    每轮问答只做一次 stat；文件未变化直接复用缓存，编辑 JSON 后下一轮即生效。
+    """
+    global _PRODUCTS_CACHE, _PRODUCTS_SIG
+    path = _catalog_path()
+    sig: tuple[str, float, int] = ("", 0.0, 0)
+    if path is not None:
+        try:
+            st = path.stat()
+            sig = (str(path), st.st_mtime, st.st_size)
+        except OSError:
+            path = None
+    with _PRODUCTS_LOCK:
+        if _PRODUCTS_SIG == sig:
+            return _PRODUCTS_CACHE
+        merged: dict[str, Product] = {p.key: p for p in PRODUCTS}
+        if path is not None:
+            loaded = _load_catalog(path)
+            if loaded:
+                for p in loaded:
+                    merged[p.key] = p  # dict 覆盖保序：已有产品位置不变，新 key 追加末尾
+                logger.info("已加载产品目录 %s：%d 个产品", path, len(merged))
+        _PRODUCTS_CACHE = tuple(merged.values())
+        _PRODUCTS_SIG = sig
+        return _PRODUCTS_CACHE
+
+
+def catalog_signature() -> tuple[str, float, int]:
+    """产品目录指纹，用于让文档归类缓存随目录修改一起失效。"""
+    products()
+    with _PRODUCTS_LOCK:
+        return _PRODUCTS_SIG
+
+
+def refresh_catalog() -> tuple[Product, ...]:
+    """强制忽略 mtime 缓存重读（设置页保存后调用）。"""
+    global _PRODUCTS_SIG
+    with _PRODUCTS_LOCK:
+        _PRODUCTS_SIG = ("", 0.0, 0)
+    return products()
+
+
+def _product_by_key() -> dict[str, Product]:
+    return {p.key: p for p in products()}
+
 
 _CJK_RE = re.compile(r"[一-鿿]")
 _ASCII_ALIAS_RE = r"(?<![a-z0-9]){}(?![a-z0-9])"
@@ -75,7 +215,7 @@ _ASCII_PREFIX_RE = r"(?<![a-z0-9]){}[a-z0-9_-]*"
 
 
 def product_label(key: str) -> str:
-    p = _PRODUCT_BY_KEY.get(key)
+    p = _product_by_key().get(key)
     return p.label if p else key
 
 
@@ -102,7 +242,7 @@ def classify_document(filename: str, sample_text: str = "") -> str:
     name_low = (filename or "").lower()
     body_low = (sample_text or "").lower()
     scores: dict[str, int] = {}
-    for p in PRODUCTS:
+    for p in products():
         score = 0
         for alias in p.aliases:
             if _match_alias(name_low, alias):
@@ -130,7 +270,11 @@ def document_product_map(ctx: "AppContext") -> dict[str, str]:
         rows = ctx.db.conn.execute(
             "SELECT id, filename, chunk_count FROM documents"
         ).fetchall()
-    signature = tuple((r["id"], r["filename"], r["chunk_count"]) for r in rows)
+    # 产品目录改动后归类结果可能变化，一并纳入缓存指纹
+    signature = (
+        tuple((r["id"], r["filename"], r["chunk_count"]) for r in rows),
+        catalog_signature(),
+    )
     with ctx._product_map_lock:
         if ctx._product_map_signature == signature:
             return dict(ctx._product_map)
@@ -241,12 +385,64 @@ def query_variants(query: str) -> tuple[str, ...]:
     return tuple(extras[:_MAX_QUERY_VARIANTS])
 
 
+# 多主题问题分隔符：只切明显并列的连词/标点，不对「和/或」这类高频字误切
+_QUERY_SPLIT_RE = re.compile(r"、|；|;|\n|以及|还有|并且|同时")
+
+
+def decompose_query(query: str, max_parts: int = 3) -> tuple[str, ...]:
+    """把「回零、报警、点动」这类多主题问题拆成子查询（用于补充关键词召回）。
+
+    只在 2~3 个子问题、且至少一个子问题足够长时拆分；拆不出有意义的部分时返回空。
+    """
+    text = (query or "").strip()
+    if len(text) < 8:
+        return ()
+    parts = [p.strip(" \t，,。.？?！!") for p in _QUERY_SPLIT_RE.split(text)]
+    parts = [p for p in parts if len(p) >= 4]
+    if not (2 <= len(parts) <= max_parts):
+        return ()
+    if not any(len(p) >= 5 for p in parts):
+        return ()
+    return tuple(parts[:max_parts])
+
+
+_FOLLOWUP_HINTS = (
+    "具体", "详细", "步骤", "展开", "再", "还有", "然后", "接着",
+    "为什么", "怎么", "如何", "呢", "上面", "上述", "刚才", "前面", "这个", "那个",
+)
+
+
+def contextualize_query(
+    query: str, previous_texts: list[str], route: "Route | None"
+) -> str:
+    """把省略式追问补全成可检索的查询。
+
+    「ACS 如何回零？」→「具体步骤呢」时，只用后一句做 embedding 会丢失主题；
+    这里只把上一轮有实质内容的问题拼到检索语句里（不改变展示给模型的原问题）。
+    """
+    q = (query or "").strip()
+    if route is None or not route.context or not previous_texts:
+        return q
+    if len(q) > 40:
+        return q
+    # 没有明显追问特征、本身又是完整问题时，不做改写，避免污染正常查询
+    if len(q) > 12 and not any(h in q for h in _FOLLOWUP_HINTS):
+        return q
+    prev = next(
+        (t.strip() for t in reversed(previous_texts) if len(t.strip()) >= 6),
+        "",
+    )
+    if not prev or prev == q:
+        return q
+    return f"{prev} {q}"[:160]
+
+
 def detect_product_keys(text: str) -> list[str]:
     """识别文本中明确提到的产品；强别名优先于型号前缀，按匹配强度排序。"""
     low = (text or "").lower()
     strong: list[tuple[str, int]] = []
     weak: list[tuple[str, int]] = []
-    for p in PRODUCTS:
+    for p in products():
         best_alias = max((len(a) for a in p.aliases if _match_alias(low, a)), default=0)
         if best_alias:
             strong.append((p.key, 100 + best_alias))
@@ -394,7 +590,7 @@ def grouped_docs(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """按产品目录顺序，返回知识库中实际有文档的产品及其 doc_ids。"""
     groups: list[tuple[str, tuple[str, ...]]] = []
-    for p in PRODUCTS:
+    for p in products():
         ids = docs_for_products((p.key,), product_map)
         if ids:
             groups.append((p.key, tuple(ids)))
@@ -424,7 +620,7 @@ def product_scopes(
     """只对问题点名的多个产品做分产品检索（对比类问题也要逐产品配额）。"""
     want = set(keys)
     scopes: list[tuple[str, tuple[str, ...]]] = []
-    for p in PRODUCTS:
+    for p in products():
         if p.key not in want:
             continue
         ids = docs_for_products((p.key,), product_map)

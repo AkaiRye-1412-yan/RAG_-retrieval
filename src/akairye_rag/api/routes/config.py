@@ -120,13 +120,23 @@ async def save_settings(payload: SettingsIn, request: Request) -> dict:
         ctx.settings_store.apply_updates(updates)
 
     s = ctx.settings_store.get()
-    # 维度与现有向量库不一致时提示重建索引，否则新文档入库会因维度冲突而失败
+    # 检索查询向量缓存随配置变化清空，避免沿用旧模型/旧维度算出的向量
+    ctx.vector_store.clear_query_cache()
+    # 维度或向量模型与现有向量库不一致时提示重建索引，否则入库/检索会失败或失真
     warn = None
     existing = ctx.vector_store.dim
-    if existing and s.embedding_dim != existing and ctx.vector_store.count() > 0:
+    stored_model = ctx.vector_store.stored_embedding_model
+    has_vectors = ctx.vector_store.count() > 0
+    if existing and s.embedding_dim != existing and has_vectors:
         warn = (
             f"向量维度已改为 {s.embedding_dim}，现有知识库向量为 {existing} 维。"
             "新文档上传前请在「向量库」页执行「重建索引」，否则会因维度不一致而失败。"
+        )
+    elif stored_model and stored_model != s.embedding_model and has_vectors:
+        warn = (
+            f"向量模型已从 {stored_model} 改为 {s.embedding_model}，"
+            "现有知识库向量由旧模型生成，检索结果会失真。"
+            "请在「向量库」页执行「重建索引」。"
         )
     return {"ok": True, "warn": warn, "settings": ctx.settings_store.masked_view()}
 

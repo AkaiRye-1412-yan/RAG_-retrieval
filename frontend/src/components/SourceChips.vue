@@ -1,50 +1,67 @@
 <script setup>
-import { ref } from 'vue'
-import { FileText, Globe, ChevronDown } from 'lucide-vue-next'
+import { computed } from 'vue'
+import { FileText, Globe } from 'lucide-vue-next'
 
-defineProps({ items: { type: Array, default: () => [] } })
-const open = ref(null)
-function toggle(i) {
-  open.value = open.value === i ? null : i
-}
+const props = defineProps({
+  items: { type: Array, default: () => [] },
+  content: { type: String, default: '' },
+})
+
+// 只保留回答正文里真正引用过的编号（[1]、[2]…）；模型未标注时回退展示全部来源。
+const usedItems = computed(() => {
+  const cited = new Set(
+    [...props.content.matchAll(/\[(\d{1,3})\]/g)].map((m) => Number(m[1])),
+  )
+  if (!cited.size) return props.items
+  const filtered = props.items.filter((it) => cited.has(Number(it.ref)))
+  return filtered.length ? filtered : props.items
+})
+
+// 同一份文档可能命中多个片段：这里按文档去重，只展示文档名，
+// 不显示引用编号、页码/相关度/原文片段。
+const docs = computed(() => {
+  const out = []
+  const map = new Map()
+  for (const it of usedItems.value) {
+    const isWeb = it.kind === 'web'
+    const key = isWeb ? 'web:' + (it.url || it.title) : 'kb:' + (it.doc_id || it.doc_name)
+    let entry = map.get(key)
+    if (!entry) {
+      entry = {
+        key,
+        web: isWeb,
+        name: isWeb ? it.title || it.url : it.doc_name,
+        url: it.url || '',
+      }
+      map.set(key, entry)
+      out.push(entry)
+    }
+  }
+  return out
+})
 </script>
 
 <template>
-  <div v-if="items.length" class="sources">
+  <div v-if="docs.length" class="sources">
     <div class="sources-title">参考来源</div>
     <div class="chips">
-      <button
-        v-for="(it, i) in items"
-        :key="i"
-        class="chip"
-        :class="{ web: it.kind === 'web' }"
-        @click="toggle(i)"
-      >
-        <component :is="it.kind === 'web' ? Globe : FileText" :size="12" />
-        <span class="ref">[{{ it.ref }}]</span>
-        <span class="name">{{ it.kind === 'web' ? it.title : it.doc_name }}</span>
-        <ChevronDown :size="11" class="caret" />
-      </button>
+      <template v-for="d in docs" :key="d.key">
+        <a
+          v-if="d.web"
+          class="chip web"
+          :href="d.url"
+          target="_blank"
+          rel="noopener"
+        >
+          <Globe :size="12" />
+          <span class="name">{{ d.name }}</span>
+        </a>
+        <span v-else class="chip">
+          <FileText :size="12" />
+          <span class="name">{{ d.name }}</span>
+        </span>
+      </template>
     </div>
-    <transition name="expand">
-      <div v-if="open !== null" class="pop">
-        <template v-if="items[open].kind === 'web'">
-          <a :href="items[open].url" target="_blank" rel="noopener" class="pop-title">
-            <Globe :size="12" /> {{ items[open].title || items[open].url }}
-          </a>
-        </template>
-        <template v-else>
-          <div class="pop-title">
-            <FileText :size="12" />
-            《{{ items[open].doc_name }}》{{ items[open].label ? ' · ' + items[open].label : '' }}
-            <span v-if="items[open].score != null" class="score">
-              相关度 {{ Number(items[open].score).toFixed(2) }}
-            </span>
-          </div>
-        </template>
-        <div class="snippet">{{ items[open].snippet }}</div>
-      </div>
-    </transition>
   </div>
 </template>
 
@@ -66,13 +83,14 @@ function toggle(i) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  max-width: 280px;
+  max-width: 360px;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: rgba(34, 211, 238, 0.06);
   color: var(--muted);
   font-size: 12px;
+  text-decoration: none;
   transition: all 0.15s;
 }
 .chip:hover {
@@ -83,60 +101,9 @@ function toggle(i) {
   background: rgba(129, 140, 248, 0.08);
   border-color: rgba(129, 140, 248, 0.3);
 }
-.ref {
-  color: var(--cyan);
-  font-weight: 600;
-}
 .name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.caret {
-  opacity: 0.6;
-}
-.pop {
-  margin-top: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: rgba(8, 17, 32, 0.85);
-}
-.pop-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--cyan);
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-a.pop-title {
-  text-decoration: none;
-}
-a.pop-title:hover {
-  text-decoration: underline;
-}
-.score {
-  margin-left: auto;
-  color: var(--muted);
-  font-weight: 400;
-}
-.snippet {
-  font-size: 12.5px;
-  color: var(--muted);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  max-height: 170px;
-  overflow-y: auto;
-}
-.expand-enter-active,
-.expand-leave-active {
-  transition: all 0.18s ease;
-}
-.expand-enter-from,
-.expand-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 </style>

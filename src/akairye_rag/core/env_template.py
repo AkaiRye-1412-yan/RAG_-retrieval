@@ -50,6 +50,14 @@ CHUNK_SIZE=500
 CHUNK_OVERLAP=80
 # 每轮对话携带的历史消息条数
 HISTORY_LIMIT=12
+# 混合检索：向量 + SQLite FTS5 关键词（指令/型号/寄存器召回），RRF 融合
+HYBRID_SEARCH=true
+# 多主题问题（如「回零、报警」）拆子查询补充关键词召回
+QUERY_DECOMPOSE=true
+# 命中片段附带前后相邻块，避免操作步骤被切分边界截断
+NEIGHBOR_EXPAND=true
+# 跨产品检索的总片段上限（产品线变多时自动下调单产品配额，每产品至少 2 条）
+MULTI_MAX_TOTAL=24
 
 # ===== 图片 / 扫描版 PDF 离线 OCR（RapidOCR，首次调用加载模型约 1~3 秒）=====
 OCR_ENABLED=true
@@ -60,4 +68,6 @@ OCR_DPI=200
 DATA_DIR=
 # 向量矩阵缓存：on=启动后首次检索载入内存（快，占用约 分块数×维度×4 字节）；off=分批扫描（省内存）
 VECTOR_CACHE=on
+# 产品目录 JSON（留空自动查找 data/product_catalog.json；新增产品无需重启，保存后热加载）
+PRODUCT_CATALOG=
 """

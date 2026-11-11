@@ -36,11 +36,61 @@ BASE_PACE_SECONDS = 1.0       # 未遇限流时的批间间隔
 MAX_PACE_SECONDS = 12.0       # 学到的最大批间间隔（套餐端点约 6~10s 放行一次大请求）
 _BACKOFF_STEPS = (3, 6, 10, 12)  # 连续 429 的退避序列，之后稳定 12s
 
+FTS_TABLE = "chunks_fts"      # 关键词索引（独立 FTS5 表，存分词后的文本）
+FTS_MARKER_KEY = "fts_marker" # chunks 表 (count:max_rowid) 指纹，用于检测索引是否过期
+EMBED_SIG_KEY = "embedding_signature"  # 建库时使用的 embedding 模型指纹
+QUERY_CACHE_MAX = 64
+
+_CJK_RUN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]+")
+_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
+_MAX_QUERY_TOKENS = 40
+
 
 def _l2_normalize(v: np.ndarray) -> np.ndarray:
     v = np.asarray(v, dtype=np.float32)
     norm = float(np.linalg.norm(v))
     return v / norm if norm > 0 else v
+
+
+def _fts_index_text(text: str) -> str:
+    """把中英文混合文本转成 FTS5 可检索的词串。
+
+    中文按二元组生成词串（回零→"回零"、如何回零→"如何 何回 回零"；unicode61
+    会进一步按字切分，等效于带权重的单字召回，召回比二元组更宽松），
+    英文/型号/数字保持整词（PTP、CDHD2、0x607A）；用空格连接后交给 unicode61。
+    """
+    tokens: list[str] = []
+    for m in _CJK_RUN_RE.finditer(text or ""):
+        run = m.group(0)
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+    tokens.extend(m.group(0).lower() for m in _WORD_RE.finditer(text or ""))
+    return " ".join(tokens)
+
+
+def _fts_match_expr(query: str) -> str:
+    """查询词串 → FTS5 MATCH 表达式（各词 OR，最多 40 个去重词）。"""
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for t in _fts_index_text(query).split():
+        if t in seen:
+            continue
+        seen.add(t)
+        tokens.append(t)
+        if len(tokens) >= _MAX_QUERY_TOKENS:
+            break
+    if not tokens:
+        return ""
+    parts: list[str] = []
+    for t in tokens:
+        # 英文/型号做前缀匹配：CDHD* 可命中 CDHD2、PTP* 可命中 PTPX
+        if re.fullmatch(r"[a-z0-9]{3,}", t):
+            parts.append(f"{t}*")
+        else:
+            parts.append('"' + t.replace('"', '""') + '"')
+    return " OR ".join(parts)
 
 
 class SQLiteVectorStore(VectorStore):
@@ -62,6 +112,11 @@ class SQLiteVectorStore(VectorStore):
         self._last_rowid: int | None = None       # 已并入内存矩阵的最大 chunks.rowid（增量加载水印）
         self._embed_limit: int | None = None      # 端点返回的每批上限（如套餐端点 10）
         self._embed_gap = BASE_PACE_SECONDS       # 批间节流间隔，遇 429 后自适应拉大
+        self._fts_available: bool | None = None   # FTS5 是否可用（None=尚未探测）
+        self._fts_lock = threading.RLock()         # 关键词索引维护 / 重建互斥
+        self._sig_warned = False                   # 向量模型指纹不一致只告警一次
+        self._query_cache: dict[tuple[str, str, str], np.ndarray] = {}
+        self._query_cache_lock = threading.Lock()
 
     # ---- LangChain 契约 ----
     @property
@@ -116,19 +171,30 @@ class SQLiteVectorStore(VectorStore):
             return 0
         now = repos.now_iso()
         dim_checked = False
+        emb_model = str(getattr(self.embeddings, "model", "") or "")
+        # 先确保关键词索引已建好（首次升级时会把已有 chunks 补进索引）
+        use_fts = self._ensure_keyword_index()
+        if use_fts:
+            # 同一 doc_id 重新入库时先清掉旧索引行，避免 INSERT OR REPLACE 留下重复关键词行
+            with self._fts_lock:
+                with self.db.lock:
+                    self.db.conn.execute(f"DELETE FROM {FTS_TABLE} WHERE doc_id=?", (doc_id,))
+                    self.db.conn.commit()
 
         def persist(batch_vecs: list[np.ndarray], start: int) -> None:
             nonlocal dim_checked
             if not dim_checked:
-                self._check_or_set_dim(batch_vecs[0].shape[0])
+                self._check_or_set_dim(batch_vecs[0].shape[0], emb_model)
                 dim_checked = True
             part = fragments[start : start + len(batch_vecs)]
             params: list[tuple[Any, ...]] = []
+            fts_params: list[tuple[str, str, str]] = []
             for offset, ((text, locator), vec) in enumerate(zip(part, batch_vecs)):
                 seq = start + offset + 1
+                chunk_id = f"{doc_id}-{seq}"
                 params.append(
                     (
-                        f"{doc_id}-{seq}",
+                        chunk_id,
                         doc_id,
                         seq,
                         text,
@@ -138,9 +204,20 @@ class SQLiteVectorStore(VectorStore):
                         now,
                     )
                 )
-            with self.db.lock:
-                self.db.conn.executemany(_CHUNK_INSERT_SQL, params)
-                self.db.conn.commit()
+                if use_fts:
+                    fts_params.append((_fts_index_text(text), chunk_id, doc_id))
+            # 向量与关键词索引同批提交；拿 fts 锁避免与索引重建交错产生重复行
+            with self._fts_lock:
+                with self.db.lock:
+                    self.db.conn.executemany(_CHUNK_INSERT_SQL, params)
+                    if use_fts:
+                        self.db.conn.executemany(
+                            f"INSERT INTO {FTS_TABLE}(text, chunk_id, doc_id) VALUES (?,?,?)",
+                            fts_params,
+                        )
+                    self.db.conn.commit()
+                if use_fts:
+                    repos.kv_set(self.db, FTS_MARKER_KEY, self._fts_marker())
             # 纯追加写：不失效缓存，由 rowid 水印把新块增量并入内存矩阵（见 _merge_new_rows），
             # 避免长文档入库期间每次查询都全量重载。
             if on_progress:
@@ -151,10 +228,27 @@ class SQLiteVectorStore(VectorStore):
         return len(fragments)
 
     def embed_query(self, query: str) -> np.ndarray:
-        """查询向量（已 L2 归一化）；多路检索时先算一次再传给 search，避免重复请求嵌入接口。"""
+        """查询向量（已 L2 归一化）；带短时缓存，重复/追问查询不再打嵌入接口。"""
         emb = self.embeddings
+        model = str(getattr(emb, "model", "") or "")
+        dims = str(getattr(emb, "dimensions", "") or "")
+        key = (model, dims, query)
+        with self._query_cache_lock:
+            cached = self._query_cache.get(key)
+        if cached is not None:
+            return cached
+        self._verify_embedding_signature(model)
         qraw = self._call_with_rate_guard(lambda: emb.embed_query(query))
-        return _l2_normalize(np.asarray(qraw, dtype=np.float32))
+        vec = _l2_normalize(np.asarray(qraw, dtype=np.float32))
+        with self._query_cache_lock:
+            if len(self._query_cache) >= QUERY_CACHE_MAX:
+                self._query_cache.pop(next(iter(self._query_cache)))
+            self._query_cache[key] = vec
+        return vec
+
+    def clear_query_cache(self) -> None:
+        with self._query_cache_lock:
+            self._query_cache.clear()
 
     def search(
         self,
@@ -210,17 +304,203 @@ class SQLiteVectorStore(VectorStore):
             )
         return out
 
-    def delete_for_doc(self, doc_id: str) -> None:
+    # ---- 关键词检索（FTS5） ----
+
+    def search_keyword(
+        self,
+        query: str,
+        *,
+        k: int = 24,
+        doc_ids: tuple[str, ...] | None = None,
+    ) -> list[tuple[str, float]]:
+        """BM25 关键词检索，返回 [(chunk_id, bm25)]；FTS5 不可用时返回空。"""
+        if not self._ensure_keyword_index():
+            return []
+        expr = _fts_match_expr(query)
+        if not expr:
+            return []
+        sql = (
+            f"SELECT chunk_id, bm25({FTS_TABLE}) AS bm FROM {FTS_TABLE}"
+            f" WHERE {FTS_TABLE} MATCH ?"
+        )
+        params: list[Any] = [expr]
+        if doc_ids is not None:
+            ids = tuple(doc_ids)
+            if not ids:
+                return []
+            placeholders = ",".join("?" for _ in ids)
+            sql += f" AND doc_id IN ({placeholders})"
+            params.extend(ids)
+        sql += " ORDER BY bm LIMIT ?"
+        params.append(max(1, int(k)))
+        try:
+            with self.db.lock:
+                rows = self.db.conn.execute(sql, params).fetchall()
+        except Exception as e:
+            logger.info("关键词检索失败，本次跳过: %s", e)
+            return []
+        return [(str(r["chunk_id"]), float(r["bm"])) for r in rows]
+
+    def chunks_by_ids(
+        self, chunk_ids: Sequence[str], query_vec: np.ndarray | None = None
+    ) -> list[dict[str, Any]]:
+        """按 id 取片段；给 query_vec 时顺带算余弦（供关键词-only 命中补分数）。"""
+        ids = list(dict.fromkeys(chunk_ids))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
         with self.db.lock:
-            self.db.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-            self.db.conn.commit()
+            rows = self.db.conn.execute(
+                f"SELECT id, doc_id, seq, content, locator, embedding FROM chunks"
+                f" WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            score: float | None = None
+            if query_vec is not None:
+                v = np.frombuffer(r["embedding"], dtype=np.float32)
+                score = round(float(np.dot(v, query_vec)), 4)
+            out.append(
+                {
+                    "id": r["id"],
+                    "doc_id": r["doc_id"],
+                    "seq": r["seq"],
+                    "content": r["content"],
+                    "locator": repos.json_loads(r["locator"]),
+                    "score": score,
+                }
+            )
+        return out
+
+    def _fts_marker(self) -> str:
+        with self.db.lock:
+            row = self.db.conn.execute(
+                "SELECT COUNT(*) AS c, COALESCE(MAX(rowid), 0) AS m FROM chunks"
+            ).fetchone()
+        return f"{row['c']}:{row['m']}"
+
+    def _ensure_keyword_index(self) -> bool:
+        """探测 FTS5 并保证索引与 chunks 一致（首次升级会全量补建一次）。
+
+        每次调用都校验 marker：文档删除走 repos 级联时不会同步 FTS 行，
+        靠这里检测不一致并重建，避免关键词索引长期残留已删除片段。
+        """
+        if self._fts_available is not None:
+            if self._fts_available:
+                self._sync_keyword_index()
+            return self._fts_available
+        with self._fts_lock:
+            if self._fts_available is not None:
+                return self._fts_available
+            try:
+                with self.db.lock:
+                    self.db.conn.execute(
+                        f"CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5("
+                        "text, chunk_id UNINDEXED, doc_id UNINDEXED, tokenize='unicode61')"
+                    )
+                    self.db.conn.commit()
+                self._fts_available = True
+            except Exception as e:
+                logger.info("FTS5 不可用，退化为纯向量检索: %s", e)
+                self._fts_available = False
+                return False
+            self._sync_keyword_index()
+            return True
+
+    def _sync_keyword_index(self) -> None:
+        with self._fts_lock:
+            expected = self._fts_marker()
+            if repos.kv_get(self.db, FTS_MARKER_KEY) == expected:
+                return
+            logger.info("关键词索引与 chunks 不一致，开始重建（%s）", expected)
+            with self.db.lock:
+                self.db.conn.execute(f"DELETE FROM {FTS_TABLE}")
+                self.db.conn.commit()
+            last = 0
+            inserted = 0
+            while True:
+                with self.db.lock:
+                    rows = self.db.conn.execute(
+                        "SELECT rowid, id, doc_id, content FROM chunks"
+                        " WHERE rowid>? ORDER BY rowid LIMIT 1000",
+                        (last,),
+                    ).fetchall()
+                if not rows:
+                    break
+                params = [
+                    (_fts_index_text(r["content"]), r["id"], r["doc_id"]) for r in rows
+                ]
+                with self.db.lock:
+                    self.db.conn.executemany(
+                        f"INSERT INTO {FTS_TABLE}(text, chunk_id, doc_id) VALUES (?,?,?)",
+                        params,
+                    )
+                    self.db.conn.commit()
+                last = rows[-1]["rowid"]
+                inserted += len(rows)
+            # 用重建完成后的指纹落库；重建期间如有并发写入，下次仍会检测到不一致并再建
+            repos.kv_set(self.db, FTS_MARKER_KEY, self._fts_marker())
+            logger.info("关键词索引已就绪：%d 块", inserted)
+
+    # ---- embedding 模型指纹 ----
+
+    @property
+    def embedding_signature(self) -> str | None:
+        return repos.kv_get(self.db, EMBED_SIG_KEY)
+
+    @property
+    def stored_embedding_model(self) -> str | None:
+        sig = self.embedding_signature
+        return sig.partition("|")[0] if sig else None
+
+    @property
+    def embedding_stale(self) -> bool:
+        """知识库向量与当前 embedding 模型是否不一致（不一致时检索结果会失真）。"""
+        stored = self.stored_embedding_model
+        if not stored:
+            return False
+        try:
+            current = str(getattr(self.embeddings, "model", "") or "")
+        except Exception:
+            return False
+        return bool(current and stored != current)
+
+    def _verify_embedding_signature(self, model: str) -> None:
+        if self._sig_warned or not model:
+            return
+        stored = self.stored_embedding_model
+        if stored and stored != model:
+            self._sig_warned = True
+            logger.warning(
+                "向量库由 embedding 模型 %s 建立，当前配置为 %s；两者向量空间不同，"
+                "检索结果会失真。请在「向量库」页执行「重建索引」。",
+                stored,
+                model,
+            )
+
+    def delete_for_doc(self, doc_id: str) -> None:
+        with self._fts_lock:
+            with self.db.lock:
+                self.db.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+                if self._fts_available:
+                    self.db.conn.execute(f"DELETE FROM {FTS_TABLE} WHERE doc_id=?", (doc_id,))
+                self.db.conn.commit()
+            if self._fts_available:
+                repos.kv_set(self.db, FTS_MARKER_KEY, self._fts_marker())
         self._invalidate()
 
     def clear_all(self) -> None:
-        with self.db.lock:
-            self.db.conn.execute("DELETE FROM chunks")
-            self.db.conn.commit()
-        repos.kv_delete(self.db, "embedding_dim")
+        with self._fts_lock:
+            with self.db.lock:
+                self.db.conn.execute("DELETE FROM chunks")
+                if self._fts_available:
+                    self.db.conn.execute(f"DELETE FROM {FTS_TABLE}")
+                self.db.conn.commit()
+            repos.kv_delete(self.db, "embedding_dim")
+            repos.kv_delete(self.db, EMBED_SIG_KEY)
+            if self._fts_available:
+                repos.kv_set(self.db, FTS_MARKER_KEY, "0:0")
         self._invalidate()
 
     # ---- 内部实现 ----
@@ -295,8 +575,16 @@ class SQLiteVectorStore(VectorStore):
                 time.sleep(self._embed_gap)  # 批间节流，规避套餐端点限流
         return vectors
 
-    def _check_or_set_dim(self, dim: int) -> None:
+    def _check_or_set_dim(self, dim: int, model: str = "") -> None:
         existing = self.dim
+        stored_sig = self.embedding_signature
+        stored_model = stored_sig.partition("|")[0] if stored_sig else ""
+        # 维度相同但模型不同同样危险：查询向量与旧库不在同一空间，检索会静默失真
+        if stored_model and model and stored_model != model and self.count() > 0:
+            raise ValueError(
+                f"向量模型已从 {stored_model} 更换为 {model}，与知识库现有向量不一致。"
+                "请在「向量库」页执行「重建索引」后再入库/检索。"
+            )
         if existing is None:
             repos.kv_set(self.db, "embedding_dim", str(dim))
         elif existing != dim:
@@ -304,6 +592,10 @@ class SQLiteVectorStore(VectorStore):
                 f"向量维度冲突：知识库现有维度 {existing}，当前向量模型输出 {dim}。"
                 "请在向量库页执行「重建索引」后重试。"
             )
+        if model:
+            sig = f"{model}|{dim}"
+            if stored_sig != sig:
+                repos.kv_set(self.db, EMBED_SIG_KEY, sig)
 
     def _invalidate(self) -> None:
         # 仅删除/清空等结构性变更时调用：下次检索整表重建矩阵。

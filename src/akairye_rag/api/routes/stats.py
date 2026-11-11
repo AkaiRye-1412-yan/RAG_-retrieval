@@ -46,6 +46,9 @@ async def stats(request: Request):
     return {
         **data,
         "embedding_dim": ctx.vector_store.dim,
+        "embedding_model": s.embedding_model,
+        "embedding_model_stored": ctx.vector_store.stored_embedding_model,
+        "embedding_stale": ctx.vector_store.embedding_stale,
         "db_size_bytes": total_bytes,
         "db_size_human": _human_size(total_bytes),
         "uploads_size_bytes": upload_bytes,

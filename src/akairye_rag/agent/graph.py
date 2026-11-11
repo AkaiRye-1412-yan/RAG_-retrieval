@@ -76,6 +76,9 @@ def build_chat_graph(ctx, s):
                 state["messages"], query
             )
             route = routing.analyze_query(query, previous, product_map)
+            # 省略式追问（「具体步骤呢」）补上上一轮主题，避免 embedding 丢失上下文；
+            # 只用于检索/嵌入，展示给模型和用户的仍是原问题
+            search_query = routing.contextualize_query(query, previous, route)
             # 沿用会话产品范围的模糊追问多取一些片段，保证在该产品内回答完整
             limit = max(s.top_k, 24) if route.tokens else (
                 max(s.top_k, 10) if route.context else s.top_k
@@ -94,13 +97,13 @@ def build_chat_graph(ctx, s):
             if route.multi or len(route.products) > 1:
                 if len(scopes) > 1:
                     raw = await ctx.kb_search_multi(
-                        query,
+                        search_query,
                         s,
                         scopes,
                         exact_tokens=route.tokens,
                         # 同义词扩展只用于模糊提问；点名产品时按用户原话检索
                         variants=(
-                            routing.query_variants(query)
+                            routing.query_variants(search_query)
                             if route.multi and not route.tokens
                             else ()
                         ),
@@ -108,7 +111,7 @@ def build_chat_graph(ctx, s):
                 else:
                     # 知识库无法按产品归类（或只有一类）：退化为普通检索
                     raw = await ctx.kb_search(
-                        query,
+                        search_query,
                         s,
                         doc_ids=route.doc_ids,
                         exact_tokens=route.tokens,
@@ -121,22 +124,34 @@ def build_chat_graph(ctx, s):
                     and any(
                         routing.content_has_any_token(h["content"], route.tokens)
                         for h in raw
+                        if not h.get("neighbor")
                     ),
                 )
             else:
                 raw = await ctx.kb_search(
-                    query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
+                    search_query, s, doc_ids=route.doc_ids, exact_tokens=route.tokens, limit=limit
                 )
                 if route.tokens:
+                    # 只按“主体命中”判断精确性；相邻扩展片段（neighbor=True）保证步骤完整，不参与筛选
+                    core = [h for h in raw if not h.get("neighbor")]
                     matched = [
-                        h for h in raw
+                        h for h in core
                         if routing.content_has_any_token(h["content"], route.tokens)
                     ]
                     route = replace(route, exact=bool(matched))
                     if matched:
-                        raw = matched
-                raw = raw[: s.top_k]
+                        raw = matched + [h for h in raw if h.get("neighbor")]
+                # limit 已按场景（普通/追问/指令）决定；额外留 4 个槽位给相邻片段扩展
+                raw = raw[: limit + 4]
             hits = await asyncio.to_thread(_kb_items, ctx, raw, product_map)
+            logger.info(
+                "检索完成: query=%r search_query=%r route=%s hits=%d top=%s",
+                query,
+                search_query,
+                getattr(route, "source", "-"),
+                len(hits),
+                hits[0]["score"] if hits else None,
+            )
         except Exception as e:
             err = str(e)[:EVENT_ERROR_MAX]
             logger.warning("预检索失败: %s", e)
@@ -163,9 +178,11 @@ def build_chat_graph(ctx, s):
     async def agent_node(state: ChatState):
         route = state.get("route")
         # 明确点名产品、或本轮沿用会话已确定的产品范围时，业务规则要求只用该产品知识库作答。
-        # auto 模式下直接基于预检索片段生成：不给模型联网/二次检索工具，
+        # 预检索有结果 → auto 模式直接生成：不给模型联网/二次检索工具，
         # 既避免混入其他产品内容，也省掉 2~3 轮模型往返与联网等待。
-        if mode == "auto" and route is not None and route.products:
+        # 预检索为空时保留一次受限的二次检索机会（仍限定 doc_ids），避免首次召回不佳
+        # 就直接判定「资料不足」；会话锁定产品时联网仍禁用。
+        if mode == "auto" and route is not None and route.products and state["hits"]:
             system = build_system_prompt(
                 state["hits"], tool_mode="off", tavily_usable=False, route=route
             )

@@ -95,7 +95,9 @@ async def list_documents(request: Request):
 async def delete_document(doc_id: str, request: Request):
     ctx = get_ctx(request)
     doc = get_or_404(lambda: repos.get_document(ctx.db, doc_id), "文档不存在")
-    repos.delete_document(ctx.db, doc_id)  # chunks 通过外键级联删除
+    # 先通过向量库删除 chunks 并同步清理 FTS5 关键词索引，再删 documents 行
+    ctx.vector_store.delete_for_doc(doc_id)
+    repos.delete_document(ctx.db, doc_id)
     ctx.vector_store._invalidate()
     ctx.upload_path(doc_id, doc["ext"]).unlink(missing_ok=True)
     return {"ok": True}
